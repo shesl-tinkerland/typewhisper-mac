@@ -664,6 +664,14 @@
       "requiresAPIKey": true,
       "releases": [
         {
+          "version": "1.0.9",
+          "minHostVersion": "0.12.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 216541,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-deepgram-v1.0.9/DeepgramPlugin.zip",
+          "minOSVersion": "14.0"
+        },
+        {
           "version": "1.0.8",
           "minHostVersion": "0.12.0",
           "sdkCompatibilityVersion": "v1",
@@ -682,11 +690,11 @@
           "downloadCount": 1
         }
       ],
-      "version": "1.0.8",
+      "version": "1.0.9",
       "minHostVersion": "0.12.0",
       "sdkCompatibilityVersion": "v1",
-      "size": 216493,
-      "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-deepgram-v1.0.8/DeepgramPlugin.zip",
+      "size": 216541,
+      "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-deepgram-v1.0.9/DeepgramPlugin.zip",
       "minOSVersion": "14.0"
     },
     {
