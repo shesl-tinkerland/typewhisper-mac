@@ -8,15 +8,33 @@ private final class MenuBarState: ObservableObject {
     @Published var statusText: String
     @Published var statusImage: String
     @Published var isModelReady: Bool
+    @Published var hasRecentTranscriptions: Bool
+    @Published var canCopyLastTranscription: Bool
+    @Published var recorderState: AudioRecorderViewModel.RecorderState
+    @Published var canToggleRecorder: Bool
+    @Published var recentTranscriptionsMenuShortcut: HotkeyService.MenuShortcutDescriptor?
+    @Published var copyLastTranscriptionMenuShortcut: HotkeyService.MenuShortcutDescriptor?
+    @Published var recorderToggleMenuShortcut: HotkeyService.MenuShortcutDescriptor?
 
     private var cancellables = Set<AnyCancellable>()
 
     init() {
         let dictation = DictationViewModel.shared
         let modelManager = ServiceContainer.shared.modelManagerService
+        let historyService = ServiceContainer.shared.historyService
+        let recentTranscriptionStore = ServiceContainer.shared.recentTranscriptionStore
+        let recorder = AudioRecorderViewModel.shared
 
         // Set initial values immediately
         self.isModelReady = modelManager.isModelReady
+        let hasRecentTranscriptions = recentTranscriptionStore.latestEntry(historyRecords: historyService.records) != nil
+        self.hasRecentTranscriptions = hasRecentTranscriptions
+        self.canCopyLastTranscription = hasRecentTranscriptions
+        self.recorderState = recorder.state
+        self.canToggleRecorder = recorder.canToggleRecording
+        self.recentTranscriptionsMenuShortcut = DictationSettingsHandler.loadMenuShortcutDescriptor(for: .recentTranscriptions)
+        self.copyLastTranscriptionMenuShortcut = DictationSettingsHandler.loadMenuShortcutDescriptor(for: .copyLastTranscription)
+        self.recorderToggleMenuShortcut = DictationSettingsHandler.loadMenuShortcutDescriptor(for: .recorderToggle)
         if let name = modelManager.activeModelName, modelManager.isModelReady {
             self.statusText = String(localized: "\(name) ready")
             self.statusImage = "checkmark.circle.fill"
@@ -47,6 +65,42 @@ private final class MenuBarState: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        recentTranscriptionStore.$sessionEntries
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshCopyAvailability()
+            }
+            .store(in: &cancellables)
+
+        historyService.$records
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshCopyAvailability()
+            }
+            .store(in: &cancellables)
+
+        Publishers.CombineLatest3(
+            recorder.$state.removeDuplicates(),
+            recorder.$micEnabled.removeDuplicates(),
+            recorder.$systemAudioEnabled.removeDuplicates()
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] state, micEnabled, systemAudioEnabled in
+            self?.refreshRecorderToggle(
+                state: state,
+                micEnabled: micEnabled,
+                systemAudioEnabled: systemAudioEnabled
+            )
+        }
+        .store(in: &cancellables)
+
+        dictation.$hotkeyLabelsVersion
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshMenuShortcuts()
+            }
+            .store(in: &cancellables)
     }
 
     private func update(state: DictationViewModel.State) {
@@ -69,6 +123,82 @@ private final class MenuBarState: ObservableObject {
         }
         isModelReady = modelManager.isModelReady
     }
+
+    private func refreshCopyAvailability() {
+        let historyService = ServiceContainer.shared.historyService
+        let recentTranscriptionStore = ServiceContainer.shared.recentTranscriptionStore
+        let hasRecentTranscriptions = recentTranscriptionStore.latestEntry(historyRecords: historyService.records) != nil
+        self.hasRecentTranscriptions = hasRecentTranscriptions
+        canCopyLastTranscription = hasRecentTranscriptions
+    }
+
+    private func refreshRecorderToggle(
+        state: AudioRecorderViewModel.RecorderState,
+        micEnabled: Bool,
+        systemAudioEnabled: Bool
+    ) {
+        recorderState = state
+        canToggleRecorder = AudioRecorderViewModel.canToggleRecording(
+            state: state,
+            micEnabled: micEnabled,
+            systemAudioEnabled: systemAudioEnabled
+        )
+    }
+
+    private func refreshMenuShortcuts() {
+        recentTranscriptionsMenuShortcut = DictationSettingsHandler.loadMenuShortcutDescriptor(for: .recentTranscriptions)
+        copyLastTranscriptionMenuShortcut = DictationSettingsHandler.loadMenuShortcutDescriptor(for: .copyLastTranscription)
+        recorderToggleMenuShortcut = DictationSettingsHandler.loadMenuShortcutDescriptor(for: .recorderToggle)
+    }
+}
+
+enum MenuBarMenuItem: Hashable {
+    case settings
+    case history
+    case errorLog
+    case toggleRecorder
+    case transcribeFile
+    case recentTranscriptions
+    case copyLastTranscription
+    case readBackLastTranscription
+    case checkForUpdates
+}
+
+enum MenuBarMenuSection: String, CaseIterable, Hashable {
+    case general = "General"
+    case recorder = "Recorder"
+    case transcription = "Transcription"
+    case updates = "Updates"
+
+    var titleLocalizationKey: String {
+        rawValue
+    }
+
+    var titleResource: LocalizedStringResource {
+        switch self {
+        case .general:
+            "General"
+        case .recorder:
+            "settings.tab.recorder"
+        case .transcription:
+            "Transcription"
+        case .updates:
+            "Updates"
+        }
+    }
+
+    var items: [MenuBarMenuItem] {
+        switch self {
+        case .general:
+            [.settings, .history, .errorLog]
+        case .recorder:
+            [.toggleRecorder]
+        case .transcription:
+            [.transcribeFile, .recentTranscriptions, .copyLastTranscription, .readBackLastTranscription]
+        case .updates:
+            [.checkForUpdates]
+        }
+    }
 }
 
 struct MenuBarView: View {
@@ -76,75 +206,157 @@ struct MenuBarView: View {
     @StateObject private var status = MenuBarState()
 
     var body: some View {
-        let _ = { SettingsWindowOpener.shared.openWindow = openWindow }()
+        Group {
+            let _ = { ManagedAppWindowOpener.shared.openWindow = openWindow }()
 
-        Label(status.statusText, systemImage: status.statusImage)
+            Label(status.statusText, systemImage: status.statusImage)
 
-        Divider()
+            Divider()
 
-        Button {
-            openWindow(id: "settings")
-            activateAppWindow("settings")
-        } label: {
-            Label(String(localized: "Settings..."), systemImage: "gear")
-        }
-        .keyboardShortcut(",")
-
-        Button {
-            openWindow(id: "history")
-            activateAppWindow("history")
-        } label: {
-            Label(String(localized: "History"), systemImage: "clock.arrow.circlepath")
-        }
-
-        Button {
-            openWindow(id: "errors")
-            activateAppWindow("errors")
-        } label: {
-            Label(String(localized: "Error Log"), systemImage: "exclamationmark.triangle")
-        }
-
-        Button {
-            openWindow(id: "settings")
-            activateAppWindow("settings")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                FileTranscriptionViewModel.shared.showFilePickerFromMenu = true
+            ForEach(MenuBarMenuSection.allCases, id: \.self) { section in
+                Section(String(localized: section.titleResource)) {
+                    ForEach(section.items, id: \.self) { item in
+                        menuItem(for: item)
+                    }
+                }
             }
-        } label: {
-            Label(String(localized: "Transcribe File..."), systemImage: "doc.text")
-        }
-        .disabled(!status.isModelReady)
 
-        Button {
-            DictationViewModel.shared.readBackLastTranscription()
-        } label: {
-            Label(String(localized: "Read Back Last Transcription"), systemImage: "speaker.wave.2")
-        }
-        .keyboardShortcut("r", modifiers: [.command, .shift])
-        .disabled(DictationViewModel.shared.lastTranscribedText == nil)
+            Divider()
 
-        Button(String(localized: "Check for Updates...")) {
-            UpdateChecker.shared?.checkForUpdates()
+            Button(String(localized: "Quit")) {
+                NSApplication.shared.terminate(nil)
+            }
+            .keyboardShortcut("q")
         }
-        .disabled(UpdateChecker.shared?.canCheckForUpdates() != true)
-
-        Divider()
-
-        Button(String(localized: "Quit")) {
-            NSApplication.shared.terminate(nil)
+        .onReceive(NotificationCenter.default.publisher(for: .openManagedAppWindow)) { notification in
+            guard let id = notification.userInfo?["id"] as? String else { return }
+            openWindow(id: id)
         }
-        .keyboardShortcut("q")
     }
 
-    private func activateAppWindow(_ id: String) {
-        NSApp.setActivationPolicy(.regular)
-        DispatchQueue.main.async {
-            if let window = NSApp.windows.first(where: {
-                $0.identifier?.rawValue.localizedCaseInsensitiveContains(id) == true
-            }) {
-                window.makeKeyAndOrderFront(nil)
+    private func openManagedWindow(_ id: String) {
+        ManagedAppWindowOpener.shared.open(id: id)
+    }
+
+    @ViewBuilder
+    private func menuItem(for item: MenuBarMenuItem) -> some View {
+        switch item {
+        case .settings:
+            Button {
+                openManagedWindow("settings")
+            } label: {
+                Label(String(localized: "Settings..."), systemImage: "gear")
             }
-            NSApp.activate()
+            .keyboardShortcut(",")
+
+        case .history:
+            Button {
+                openManagedWindow("history")
+            } label: {
+                Label(String(localized: "History"), systemImage: "clock.arrow.circlepath")
+            }
+
+        case .errorLog:
+            Button {
+                openManagedWindow("errors")
+            } label: {
+                Label(String(localized: "Error Log"), systemImage: "exclamationmark.triangle")
+            }
+
+        case .toggleRecorder:
+            Button {
+                AudioRecorderViewModel.shared.toggleRecording()
+            } label: {
+                Label(recorderToggleTitle, systemImage: recorderToggleSystemImage)
+            }
+            .keyboardShortcut(keyboardShortcut(from: status.recorderToggleMenuShortcut))
+            .disabled(!status.canToggleRecorder)
+
+        case .transcribeFile:
+            Button {
+                openManagedWindow("settings")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    FileTranscriptionViewModel.shared.showFilePickerFromMenu = true
+                }
+            } label: {
+                Label(String(localized: "Transcribe File..."), systemImage: "doc.text")
+            }
+            .disabled(!status.isModelReady)
+
+        case .recentTranscriptions:
+            Button {
+                DictationViewModel.shared.triggerRecentTranscriptionsPalette()
+            } label: {
+                Label(String(localized: "Recent Transcriptions"), systemImage: "clock.arrow.circlepath")
+            }
+            .keyboardShortcut(keyboardShortcut(from: status.recentTranscriptionsMenuShortcut))
+            .disabled(!status.hasRecentTranscriptions)
+
+        case .copyLastTranscription:
+            Button {
+                DictationViewModel.shared.copyLastTranscriptionToClipboard()
+            } label: {
+                Label(String(localized: "Copy Last Transcription"), systemImage: "doc.on.doc")
+            }
+            .keyboardShortcut(keyboardShortcut(from: status.copyLastTranscriptionMenuShortcut))
+            .disabled(!status.canCopyLastTranscription)
+
+        case .readBackLastTranscription:
+            Button {
+                DictationViewModel.shared.readBackLastTranscription()
+            } label: {
+                Label(String(localized: "Read Back Last Transcription"), systemImage: "speaker.wave.2")
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(DictationViewModel.shared.lastTranscribedText == nil)
+
+        case .checkForUpdates:
+            Button(String(localized: "Check for Updates...")) {
+                UpdateChecker.shared?.checkForUpdates()
+            }
+            .disabled(UpdateChecker.shared?.canCheckForUpdates() != true)
         }
+    }
+
+    private var recorderToggleTitle: String {
+        switch status.recorderState {
+        case .idle:
+            String(localized: "recorder.startRecording")
+        case .recording:
+            String(localized: "recorder.stopRecording")
+        case .finalizing:
+            String(localized: "recorder.transcribing")
+        }
+    }
+
+    private var recorderToggleSystemImage: String {
+        switch status.recorderState {
+        case .idle:
+            "record.circle"
+        case .recording:
+            "stop.fill"
+        case .finalizing:
+            "arrow.triangle.2.circlepath"
+        }
+    }
+
+    private func keyboardShortcut(
+        from descriptor: HotkeyService.MenuShortcutDescriptor?
+    ) -> KeyboardShortcut? {
+        guard let descriptor else { return nil }
+        return KeyboardShortcut(
+            KeyEquivalent(descriptor.keyEquivalent),
+            modifiers: eventModifiers(from: descriptor.modifiers)
+        )
+    }
+
+    private func eventModifiers(from flags: NSEvent.ModifierFlags) -> EventModifiers {
+        var modifiers: EventModifiers = []
+        if flags.contains(.command) { modifiers.insert(.command) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.function) { modifiers.insert(EventModifiers(rawValue: 1 << 23)) }
+        return modifiers
     }
 }

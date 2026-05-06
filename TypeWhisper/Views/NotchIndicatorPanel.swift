@@ -6,8 +6,9 @@ import Combine
 @MainActor
 final class NotchGeometry: ObservableObject {
     @Published var notchWidth: CGFloat = 185
-    @Published var notchHeight: CGFloat = 38
+    @Published var notchHeight: CGFloat = NotchIndicatorLayout.notchedClosedHeight
     @Published var hasNotch: Bool = false
+    @Published var isPresented: Bool = false
 
     func update(for screen: NSScreen) {
         hasNotch = screen.safeAreaInsets.top > 0
@@ -18,7 +19,10 @@ final class NotchGeometry: ObservableObject {
         } else {
             notchWidth = 0
         }
-        notchHeight = hasNotch ? screen.safeAreaInsets.top : 32
+        notchHeight = NotchIndicatorLayout.closedHeight(
+            hasNotch: hasNotch,
+            safeAreaTopInset: screen.safeAreaInsets.top
+        )
     }
 }
 
@@ -33,12 +37,17 @@ class NotchIndicatorPanel: NSPanel {
     /// Large enough to accommodate the expanded (open) state. SwiftUI clips the visible area.
     private static let panelWidth: CGFloat = 500
     private static let panelHeight: CGFloat = 500
+    private static let presentationAnimationDuration: Duration = .milliseconds(220)
 
+    private let screenResolver: IndicatorScreenResolver
     private let notchGeometry = NotchGeometry()
     private var cancellables = Set<AnyCancellable>()
     private var cachedScreen: NSScreen?
+    private var showTask: Task<Void, Never>?
+    private var dismissTask: Task<Void, Never>?
 
-    init() {
+    init(screenResolver: IndicatorScreenResolver) {
+        self.screenResolver = screenResolver
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),
             styleMask: [.borderless, .nonactivatingPanel, .utilityWindow, .hudWindow],
@@ -51,11 +60,13 @@ class NotchIndicatorPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false
         isMovable = false
-        level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
         appearance = NSAppearance(named: .darkAqua)
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         hidesOnDeactivate = false
         ignoresMouseEvents = true
+        FloatingPanelSpacePolicy.applyIndicatorPolicy(
+            to: self,
+            displayMode: DictationViewModel.shared.notchIndicatorDisplay
+        )
 
         let hostingView = FirstMouseHostingView(rootView: NotchIndicatorView(geometry: notchGeometry))
         hostingView.sizingOptions = []
@@ -89,15 +100,6 @@ class NotchIndicatorPanel: NSPanel {
                 self?.updateVisibility(state: vm.state, vm: vm)
             }
             .store(in: &cancellables)
-
-        NSWorkspace.shared.notificationCenter
-            .publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self, self.isVisible else { return }
-                self.orderFrontRegardless()
-            }
-            .store(in: &cancellables)
     }
 
     func updateVisibility(state: DictationViewModel.State, vm: DictationViewModel) {
@@ -124,6 +126,9 @@ class NotchIndicatorPanel: NSPanel {
     // MARK: - Notch geometry
 
     func show() {
+        showTask?.cancel()
+        dismissTask?.cancel()
+
         let screen: NSScreen
         if let cached = cachedScreen, isVisible {
             screen = cached
@@ -137,25 +142,67 @@ class NotchIndicatorPanel: NSPanel {
         let x = screenFrame.midX - Self.panelWidth / 2
         let y = screenFrame.origin.y + screenFrame.height - Self.panelHeight
 
+        let wasVisible = isVisible
         setFrame(NSRect(x: x, y: y, width: Self.panelWidth, height: Self.panelHeight), display: true)
-        orderFrontRegardless()
+        FloatingPanelSpacePolicy.orderIndicatorFront(
+            self,
+            displayMode: DictationViewModel.shared.notchIndicatorDisplay
+        )
+
+        guard !wasVisible else {
+            if !notchGeometry.isPresented {
+                withAnimation(.easeOut(duration: 0.22)) {
+                    notchGeometry.isPresented = true
+                }
+            }
+            return
+        }
+
+        notchGeometry.isPresented = false
+        showTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                self.notchGeometry.isPresented = true
+            }
+            self.showTask = nil
+        }
     }
 
     private func resolveScreen() -> NSScreen {
-        let display = DictationViewModel.shared.notchIndicatorDisplay
-        switch display {
-        case .activeScreen:
-            let mouseLocation = NSEvent.mouseLocation
-            return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
-        case .primaryScreen:
-            return NSScreen.main ?? NSScreen.screens[0]
-        case .builtInScreen:
-            return NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
+        screenResolver.resolveScreen(for: DictationViewModel.shared.notchIndicatorDisplay)
+    }
+
+    func refreshPlacementForActiveContextChange() {
+        guard isVisible else { return }
+        if DictationViewModel.shared.notchIndicatorDisplay == .activeScreen {
+            cachedScreen = nil
         }
+        show()
     }
 
     func dismiss() {
         cachedScreen = nil
-        orderOut(nil)
+        showTask?.cancel()
+        showTask = nil
+        dismissTask?.cancel()
+
+        guard isVisible else {
+            notchGeometry.isPresented = false
+            orderOut(nil)
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            notchGeometry.isPresented = false
+        }
+
+        dismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.presentationAnimationDuration)
+            guard !Task.isCancelled else { return }
+            guard let self, !self.notchGeometry.isPresented else { return }
+            self.orderOut(nil)
+            self.dismissTask = nil
+        }
     }
 }

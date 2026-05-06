@@ -22,8 +22,11 @@ public protocol HostServices: Sendable {
     // Event bus
     var eventBus: EventBusProtocol { get }
 
-    // Available profile names
-    var availableProfileNames: [String] { get }
+    // Available rule names
+    var availableRuleNames: [String] { get }
+
+    // Available user workflows
+    var availableWorkflows: [PluginWorkflowInfo] { get }
 
     // Notify host that plugin capabilities changed (e.g. model loaded/unloaded)
     func notifyCapabilitiesChanged()
@@ -33,22 +36,72 @@ public protocol HostServices: Sendable {
     func setStreamingDisplayActive(_ active: Bool)
 }
 
-// MARK: - HTTP Client (Ephemeral Sessions)
+public extension HostServices {
+    var availableWorkflows: [PluginWorkflowInfo] { [] }
 
-/// Drop-in replacement for `URLSession.shared.data(for:)` that creates a fresh ephemeral
-/// session per call. This prevents stale HTTP/2 connections after sleep/wake or network changes
-/// from hanging indefinitely.
+    @available(*, deprecated, renamed: "availableRuleNames")
+    var availableProfileNames: [String] { availableRuleNames }
+}
+
+// MARK: - HTTP Client (Reusable Ephemeral Session)
+
+@_spi(Testing) public protocol PluginHTTPClientSession: AnyObject {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+    func finishTasksAndInvalidate()
+}
+
+@_spi(Testing) extension URLSession: PluginHTTPClientSession {}
+
+/// Drop-in replacement for `URLSession.shared.data(for:)` that reuses one ephemeral
+/// session so fast plugin requests can keep DNS/TLS/HTTP connections warm.
 public enum PluginHTTPClient {
     private static let logger = Logger(subsystem: "com.typewhisper.sdk", category: "HTTP")
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var sharedSession: (any PluginHTTPClientSession)?
+    nonisolated(unsafe) private static var sessionFactory: (URLSessionConfiguration) -> any PluginHTTPClientSession = {
+        URLSession(configuration: $0)
+    }
 
     public static func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        let config = URLSessionConfiguration.ephemeral
-        let timeout = request.timeoutInterval > 0 ? request.timeoutInterval : 30
-        config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = max(timeout * 2, 90)
-        let session = URLSession(configuration: config)
-        defer { session.finishTasksAndInvalidate() }
+        try await data(for: request, allowsRetry: true)
+    }
 
+    public static func resetSharedSession(reason: String? = nil) {
+        let session = lock.withLock {
+            let existing = sharedSession
+            sharedSession = nil
+            return existing
+        }
+
+        session?.finishTasksAndInvalidate()
+        if let reason {
+            logger.info("Reset shared plugin HTTP session: \(reason)")
+        } else {
+            logger.info("Reset shared plugin HTTP session")
+        }
+    }
+
+    @_spi(Testing) public static func configureForTesting(
+        _ factory: @escaping (URLSessionConfiguration) -> any PluginHTTPClientSession
+    ) {
+        resetSharedSession(reason: "test reconfiguration")
+        lock.withLock {
+            sessionFactory = factory
+        }
+    }
+
+    @_spi(Testing) public static func resetTestingHooks() {
+        resetSharedSession(reason: "test cleanup")
+        lock.withLock {
+            sessionFactory = { URLSession(configuration: $0) }
+        }
+    }
+
+    private static func data(
+        for request: URLRequest,
+        allowsRetry: Bool
+    ) async throws -> (Data, URLResponse) {
+        let session = sharedOrCreateSession()
         let method = request.httpMethod ?? "GET"
         let url = request.url?.absoluteString ?? "unknown"
         logger.info("\(method) \(url)")
@@ -62,8 +115,68 @@ public enum PluginHTTPClient {
             return (data, response)
         } catch {
             let elapsed = ContinuousClock.now - start
+            if allowsRetry, isTransientNetworkError(error) {
+                logger.warning("\(method) \(url) transient failure after \(elapsed), resetting session and retrying once: \(error.localizedDescription)")
+                resetSharedSession(matching: session, reason: "transient network error")
+                return try await data(for: request, allowsRetry: false)
+            }
+
             logger.error("\(method) \(url) failed after \(elapsed): \(error.localizedDescription)")
             throw error
+        }
+    }
+
+    private static func sharedOrCreateSession() -> any PluginHTTPClientSession {
+        lock.withLock {
+            if let sharedSession {
+                return sharedSession
+            }
+
+            let session = sessionFactory(makeConfiguration())
+            sharedSession = session
+            return session
+        }
+    }
+
+    private static func makeConfiguration() -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 90
+        return config
+    }
+
+    private static func resetSharedSession(matching session: any PluginHTTPClientSession, reason: String) {
+        let didRemoveSharedSession = lock.withLock {
+            guard let current = sharedSession, current === session else {
+                return false
+            }
+            sharedSession = nil
+            return true
+        }
+
+        session.finishTasksAndInvalidate()
+        if didRemoveSharedSession {
+            logger.info("Reset shared plugin HTTP session: \(reason)")
+        } else {
+            logger.info("Invalidated plugin HTTP session after \(reason)")
+        }
+    }
+
+    private static func isTransientNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+
+        switch urlError.code {
+        case .networkConnectionLost,
+             .timedOut,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .notConnectedToInternet:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -356,7 +469,30 @@ public struct PluginOpenAIChatHelper: Sendable {
         systemPrompt: String,
         userText: String,
         maxOutputTokens: Int? = 4096,
-        maxOutputTokenParameter: String = "max_tokens"
+        maxOutputTokenParameter: String = "max_tokens",
+        reasoningEffort: String? = nil
+    ) async throws -> String {
+        try await process(
+            apiKey: apiKey,
+            model: model,
+            systemPrompt: systemPrompt,
+            userText: userText,
+            maxOutputTokens: maxOutputTokens,
+            maxOutputTokenParameter: maxOutputTokenParameter,
+            reasoningEffort: reasoningEffort,
+            temperature: 0.3
+        )
+    }
+
+    public func process(
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        userText: String,
+        maxOutputTokens: Int? = 4096,
+        maxOutputTokenParameter: String = "max_tokens",
+        reasoningEffort: String? = nil,
+        temperature: Double?
     ) async throws -> String {
         let endpoint = "\(baseURL)\(chatEndpoint)"
         guard let url = URL(string: endpoint) else {
@@ -368,7 +504,9 @@ public struct PluginOpenAIChatHelper: Sendable {
             systemPrompt: systemPrompt,
             userText: userText,
             maxOutputTokens: maxOutputTokens,
-            maxOutputTokenParameter: maxOutputTokenParameter
+            maxOutputTokenParameter: maxOutputTokenParameter,
+            reasoningEffort: reasoningEffort,
+            temperature: temperature
         )
 
         var request = URLRequest(url: url)
@@ -412,24 +550,73 @@ public struct PluginOpenAIChatHelper: Sendable {
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    public func process(
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        userText: String,
+        maxOutputTokens: Int? = 4096,
+        maxOutputTokenParameter: String = "max_tokens"
+    ) async throws -> String {
+        try await process(
+            apiKey: apiKey,
+            model: model,
+            systemPrompt: systemPrompt,
+            userText: userText,
+            maxOutputTokens: maxOutputTokens,
+            maxOutputTokenParameter: maxOutputTokenParameter,
+            reasoningEffort: nil
+        )
+    }
+
+    public func process(
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        userText: String,
+        maxOutputTokens: Int? = 4096,
+        maxOutputTokenParameter: String = "max_tokens",
+        temperature: Double?
+    ) async throws -> String {
+        try await process(
+            apiKey: apiKey,
+            model: model,
+            systemPrompt: systemPrompt,
+            userText: userText,
+            maxOutputTokens: maxOutputTokens,
+            maxOutputTokenParameter: maxOutputTokenParameter,
+            reasoningEffort: nil,
+            temperature: temperature
+        )
+    }
+
     func requestBody(
         model: String,
         systemPrompt: String,
         userText: String,
         maxOutputTokens: Int?,
-        maxOutputTokenParameter: String
+        maxOutputTokenParameter: String,
+        reasoningEffort: String?,
+        temperature: Double?
     ) -> [String: Any] {
         var requestBody: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userText]
-            ],
-            "temperature": 0.3
+            ]
         ]
+
+        if let temperature {
+            requestBody["temperature"] = temperature
+        }
 
         if let maxOutputTokens {
             requestBody[maxOutputTokenParameter] = maxOutputTokens
+        }
+
+        if let reasoningEffort, !reasoningEffort.isEmpty {
+            requestBody["reasoning_effort"] = reasoningEffort
         }
 
         return requestBody

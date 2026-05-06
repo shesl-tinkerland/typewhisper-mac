@@ -2,24 +2,83 @@ import SwiftUI
 
 struct IndicatorPreviewView: View {
     @ObservedObject private var dictation = DictationViewModel.shared
+    private let previewNotchWidth: CGFloat = 185
+    private let notchPreviewBaseHeight: CGFloat = 110
+    private let notchPreviewBaseBodyHeight: CGFloat = 38
+    private let notchPreviewBaseFontSize: CGFloat = 11
+    private let overlayPreviewCollapsedHeight: CGFloat = 82
+    private let overlayPreviewBaseHeight: CGFloat = 110
+    private let overlayPreviewBaseFontSize: CGFloat = 12
+    private let notchPreviewRecordingDuration: TimeInterval = 83
+    private let notchPreviewActiveRuleName = "Workflow"
 
     private let streamingText = String(localized: "Hello, this is a live preview of the streaming text...")
     private var showTranscriptPreview: Bool {
-        dictation.indicatorTranscriptPreviewEnabled && dictation.indicatorStyle != .minimal
+        dictation.indicatorTranscriptPreviewEnabled && dictation.indicatorStyle.supportsTranscriptPreview
+    }
+    private var notchClosedWidth: CGFloat {
+        NotchIndicatorLayout.recordingClosedWidth(
+            hasNotch: true,
+            notchWidth: previewNotchWidth,
+            leftContent: dictation.notchIndicatorLeftContent,
+            rightContent: dictation.notchIndicatorRightContent,
+            recordingDuration: notchPreviewRecordingDuration,
+            activeRuleName: notchPreviewActiveRuleName
+        )
+    }
+    private var notchHeight: CGFloat {
+        NotchIndicatorLayout.closedHeight(hasNotch: true)
+    }
+    private var notchPreviewMode: NotchExpansionMode {
+        showTranscriptPreview ? .transcript : .closed
+    }
+    private var notchPreviewWidth: CGFloat {
+        NotchIndicatorLayout.containerWidth(closedWidth: notchClosedWidth, mode: notchPreviewMode)
+    }
+    private var notchBottomCornerRadius: CGFloat {
+        switch notchPreviewMode {
+        case .closed:
+            return 14
+        case .processing:
+            return 18
+        case .transcript, .feedback:
+            return 24
+        }
     }
     private var previewHeight: CGFloat {
         switch dictation.indicatorStyle {
         case .notch:
-            return showTranscriptPreview ? 110 : 88
+            return showTranscriptPreview ? notchPreviewBaseHeight + (notchPreviewBodyHeight - notchPreviewBaseBodyHeight) : notchPreviewBaseHeight
         case .overlay:
-            return showTranscriptPreview ? 110 : 82
+            return showTranscriptPreview ? scaledPreviewMetric(overlayPreviewBaseHeight, for: .overlay) : overlayPreviewCollapsedHeight
         case .minimal:
             return 72
         }
     }
 
+    private var notchPreviewBodyHeight: CGFloat {
+        showTranscriptPreview ? scaledPreviewMetric(notchPreviewBaseBodyHeight, for: .notch) : 0
+    }
+
+    private var notchPreviewFontSize: CGFloat {
+        scaledPreviewMetric(notchPreviewBaseFontSize, for: .notch)
+    }
+
+    private var overlayPreviewFontSize: CGFloat {
+        scaledPreviewMetric(overlayPreviewBaseFontSize, for: .overlay)
+    }
+
+    private var notchPreviewLeftSpacing: CGFloat {
+        let leftContentWidth = NotchIndicatorLayout.recordingContentWidth(
+            dictation.notchIndicatorLeftContent,
+            recordingDuration: notchPreviewRecordingDuration,
+            activeRuleName: notchPreviewActiveRuleName
+        )
+        return leftContentWidth > 0 ? NotchIndicatorLayout.leftContentSpacing : 0
+    }
+
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(white: 0.15))
 
@@ -33,61 +92,63 @@ struct IndicatorPreviewView: View {
                 }
             }
             .environment(\.colorScheme, .dark)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(height: previewHeight)
         .animation(.easeInOut(duration: 0.2), value: dictation.indicatorStyle)
         .animation(.easeInOut(duration: 0.2), value: dictation.notchIndicatorLeftContent)
         .animation(.easeInOut(duration: 0.2), value: dictation.notchIndicatorRightContent)
         .animation(.easeInOut(duration: 0.2), value: dictation.indicatorTranscriptPreviewEnabled)
+        .animation(.easeInOut(duration: 0.2), value: dictation.indicatorTranscriptPreviewFontSizeOffset)
         .accessibilityHidden(true)
     }
 
     // MARK: - Notch Preview
 
-    private let notchWidth: CGFloat = 185
-    private let notchHeight: CGFloat = 34
-    private let extensionWidth: CGFloat = 60
-
     @ViewBuilder
     private var notchPreview: some View {
-        let closedWidth = notchWidth + 2 * extensionWidth
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                HStack(spacing: 5) {
-                    appIconPlaceholder(size: 14, cornerRadius: 3)
-                    contentLabel(dictation.notchIndicatorLeftContent, size: 9)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .padding(.leading, 20)
+            notchPreviewCap
 
-                Color.clear
-                    .frame(width: notchWidth)
-
-                contentLabel(dictation.notchIndicatorRightContent, size: 9)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                    .padding(.trailing, 30)
-            }
-            .frame(width: closedWidth, height: notchHeight)
-            .frame(maxWidth: .infinity)
-
-            if showTranscriptPreview {
-                Text(streamingText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 8)
-            }
+            notchPreviewBody
         }
-        .frame(width: showTranscriptPreview ? max(closedWidth, 360) : closedWidth)
+        .frame(width: notchPreviewWidth)
         .background(.black)
-        .clipShape(
-            NotchShape(
-                topCornerRadius: showTranscriptPreview ? 19 : 6,
-                bottomCornerRadius: showTranscriptPreview ? 24 : 14
-            )
-        )
+        .clipShape(NotchShape(bottomCornerRadius: notchBottomCornerRadius))
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var notchPreviewCap: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: notchPreviewLeftSpacing) {
+                appIconPlaceholder(size: 14, cornerRadius: 3)
+                contentLabel(dictation.notchIndicatorLeftContent, size: 9)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(.leading, NotchIndicatorLayout.leadingInset)
+
+            Color.clear
+                .frame(width: previewNotchWidth)
+
+            contentLabel(dictation.notchIndicatorRightContent, size: 9)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .padding(.trailing, NotchIndicatorLayout.trailingInset)
+        }
+        .frame(width: notchPreviewWidth, height: notchHeight)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var notchPreviewBody: some View {
+        Text(streamingText)
+            .font(.system(size: notchPreviewFontSize))
+            .foregroundStyle(.white.opacity(0.7))
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 8)
+            .frame(height: notchPreviewBodyHeight, alignment: .top)
+            .clipped()
+            .opacity(showTranscriptPreview ? 1 : 0)
     }
 
     // MARK: - Overlay Preview
@@ -106,7 +167,7 @@ struct IndicatorPreviewView: View {
 
             if showTranscriptPreview {
                 Text(streamingText)
-                    .font(.system(size: 12))
+                    .font(.system(size: overlayPreviewFontSize))
                     .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -162,9 +223,11 @@ struct IndicatorPreviewView: View {
                 .fill(Color.red)
                 .frame(width: size * 0.7, height: size * 0.7)
         case .timer:
-            Text("1:23")
+            Text(formatDuration(notchPreviewRecordingDuration))
                 .font(.system(size: size, weight: .medium).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.6))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         case .waveform:
             HStack(spacing: 1.5) {
                 ForEach(0..<5, id: \.self) { i in
@@ -175,17 +238,23 @@ struct IndicatorPreviewView: View {
             }
             .frame(height: 14)
         case .profile:
-            Text("Profile")
+            Text(notchPreviewActiveRuleName)
                 .font(.system(size: size * 0.85, weight: .medium))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .fixedSize()
+                .truncationMode(.tail)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
+                .frame(maxWidth: NotchIndicatorLayout.profileChipMaxWidth, alignment: .leading)
                 .background(.white.opacity(0.2), in: Capsule())
         case .none:
             Color.clear.frame(width: 0)
         }
+    }
+
+    private func scaledPreviewMetric(_ baseMetric: CGFloat, for style: IndicatorStyle) -> CGFloat {
+        let fontSize = dictation.indicatorTranscriptPreviewFontSize(for: style)
+        return style.scaledTranscriptPreviewMetric(baseMetric, fontSize: fontSize)
     }
 }
 
@@ -215,7 +284,7 @@ struct IndicatorStylePicker: View {
                 }
                 .frame(width: notchTileWidth, height: 20)
                 .background(.black)
-                .clipShape(NotchShape(topCornerRadius: 3, bottomCornerRadius: 6))
+                .clipShape(NotchShape(bottomCornerRadius: 6))
             }
 
             styleTile(.overlay, label: String(localized: "Overlay")) {

@@ -11,12 +11,37 @@ struct NotchIndicatorView: View {
     @State private var textExpanded = false
     @State private var dotPulse = false
 
-    private let extensionWidth: CGFloat = 60
     private let contentPadding: CGFloat = 28
     private let sizing: IndicatorSizing = .notch
+    private let processingBodyHeight: CGFloat = 28
+    private let feedbackBodyHeight: CGFloat = 52
 
     private var closedWidth: CGFloat {
-        geometry.hasNotch ? geometry.notchWidth + 2 * extensionWidth : 200
+        if case .recording = viewModel.state {
+            return NotchIndicatorLayout.recordingClosedWidth(
+                hasNotch: geometry.hasNotch,
+                notchWidth: geometry.notchWidth,
+                leftContent: viewModel.notchIndicatorLeftContent,
+                rightContent: viewModel.notchIndicatorRightContent,
+                recordingDuration: viewModel.recordingDuration,
+                activeRuleName: viewModel.activeRuleName
+            )
+        }
+
+        return NotchIndicatorLayout.closedWidth(hasNotch: geometry.hasNotch, notchWidth: geometry.notchWidth)
+    }
+
+    private var leftStatusSpacing: CGFloat {
+        guard case .recording = viewModel.state else {
+            return 0
+        }
+
+        let leftContentWidth = NotchIndicatorLayout.recordingContentWidth(
+            viewModel.notchIndicatorLeftContent,
+            recordingDuration: viewModel.recordingDuration,
+            activeRuleName: viewModel.activeRuleName
+        )
+        return leftContentWidth > 0 ? NotchIndicatorLayout.leftContentSpacing : 0
     }
 
     private var suppressStreamingText: Bool {
@@ -27,6 +52,10 @@ struct NotchIndicatorView: View {
         viewModel.state == .inserting && viewModel.actionFeedbackMessage != nil
     }
 
+    private var hasRecordingCancelWarning: Bool {
+        viewModel.state == .recording && viewModel.recordingCancelWarningMessage != nil
+    }
+
     private var hasProcessingPhase: Bool {
         viewModel.state == .processing && viewModel.processingPhase != nil
     }
@@ -35,67 +64,96 @@ struct NotchIndicatorView: View {
         viewModel.indicatorTranscriptPreviewEnabled && !suppressStreamingText
     }
 
-    private var isExpanded: Bool {
-        textExpanded || hasActionFeedback
+    private var hasTranscriptSection: Bool {
+        viewModel.state == .recording && showTranscriptPreview
+    }
+
+    private var transcriptBodyVisible: Bool {
+        viewModel.state == .recording && showTranscriptPreview && textExpanded
+    }
+
+    private var expansionMode: NotchExpansionMode {
+        if hasRecordingCancelWarning { return .feedback }
+        if transcriptBodyVisible { return .transcript }
+        if hasActionFeedback { return .feedback }
+        if hasProcessingPhase { return .processing }
+        return .closed
     }
 
     private var currentWidth: CGFloat {
-        if textExpanded { return max(closedWidth, 400) }
-        if hasActionFeedback { return max(closedWidth, 340) }
-        if hasProcessingPhase { return closedWidth + 80 }
-        return closedWidth
+        NotchIndicatorLayout.containerWidth(closedWidth: closedWidth, mode: expansionMode)
+    }
+
+    private var bottomCornerRadius: CGFloat {
+        switch expansionMode {
+        case .closed:
+            return 14
+        case .processing:
+            return 18
+        case .transcript, .feedback:
+            return 24
+        }
+    }
+
+    private var transcriptBodyHeight: CGFloat {
+        hasTranscriptSection && textExpanded ? viewModel.indicatorTranscriptPreviewExpandedHeight(for: .notch) : 0
+    }
+
+    private var transcriptFontSize: CGFloat {
+        viewModel.indicatorTranscriptPreviewFontSize(for: .notch)
+    }
+
+    private var expandedBodyHeight: CGFloat {
+        if hasRecordingCancelWarning {
+            return feedbackBodyHeight
+        }
+        if hasTranscriptSection {
+            return transcriptBodyHeight
+        }
+        if hasProcessingPhase {
+            return processingBodyHeight
+        }
+        if hasActionFeedback {
+            return feedbackBodyHeight
+        }
+        return 0
+    }
+
+    private var presentationRevealScale: CGFloat {
+        geometry.isPresented ? 1 : 0.001
+    }
+
+    private var presentationOpacity: Double {
+        geometry.isPresented ? 1 : 0
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            statusBar
-                .frame(width: currentWidth, height: geometry.notchHeight)
-                .frame(maxWidth: .infinity)
-
-            if viewModel.state == .recording, showTranscriptPreview {
-                IndicatorExpandableText(
-                    text: viewModel.partialText,
-                    sizing: sizing,
-                    expanded: textExpanded,
-                    contentPadding: 34
-                )
-                .onChange(of: viewModel.partialText) {
-                    if showTranscriptPreview, !viewModel.partialText.isEmpty, !textExpanded {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            textExpanded = true
-                        }
-                    }
-                }
-            }
-
-            if hasProcessingPhase {
-                Text(viewModel.processingPhase ?? "")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-            }
-
-            if hasActionFeedback {
-                IndicatorActionFeedback(
-                    message: viewModel.actionFeedbackMessage ?? "",
-                    icon: viewModel.actionFeedbackIcon,
-                    isError: viewModel.actionFeedbackIsError,
-                    contentPadding: contentPadding
-                )
-            }
+            notchCap
+            expandedBody
         }
         .frame(width: currentWidth)
         .background(.black)
-        .clipShape(NotchShape(
-            topCornerRadius: isExpanded ? 19 : (hasProcessingPhase ? 8 : 6),
-            bottomCornerRadius: isExpanded ? 24 : (hasProcessingPhase ? 18 : 14)
-        ))
+        .clipShape(NotchShape(bottomCornerRadius: bottomCornerRadius))
+        .mask(alignment: .top) {
+            Rectangle()
+                .scaleEffect(x: 1, y: presentationRevealScale, anchor: .top)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .opacity(presentationOpacity)
         .preferredColorScheme(.dark)
-        .animation(.easeInOut(duration: 0.3), value: textExpanded)
-        .animation(.easeInOut(duration: 0.2), value: viewModel.state)
+        .animation(.easeOut(duration: 0.22), value: geometry.isPresented)
+        .animation(.easeOut(duration: 0.24), value: currentWidth)
+        .animation(.easeOut(duration: 0.24), value: expandedBodyHeight)
+        .animation(.easeInOut(duration: 0.18), value: viewModel.state)
         .animation(.easeOut(duration: 0.08), value: viewModel.audioLevel)
+        .onChange(of: viewModel.partialText) {
+            if showTranscriptPreview, !viewModel.partialText.isEmpty, !textExpanded {
+                withAnimation(.easeOut(duration: 0.24)) {
+                    textExpanded = true
+                }
+            }
+        }
         .onChange(of: viewModel.state) {
             if viewModel.state == .recording {
                 withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
@@ -108,18 +166,18 @@ struct NotchIndicatorView: View {
         }
         .onChange(of: suppressStreamingText) {
             if !showTranscriptPreview {
-                withAnimation(.easeInOut(duration: 0.3)) {
+                withAnimation(.easeOut(duration: 0.24)) {
                     textExpanded = false
                 }
             }
         }
         .onChange(of: viewModel.indicatorTranscriptPreviewEnabled) {
             if showTranscriptPreview, viewModel.state == .recording, !viewModel.partialText.isEmpty {
-                withAnimation(.easeOut(duration: 0.25)) {
+                withAnimation(.easeOut(duration: 0.24)) {
                     textExpanded = true
                 }
             } else if !showTranscriptPreview {
-                withAnimation(.easeInOut(duration: 0.3)) {
+                withAnimation(.easeOut(duration: 0.24)) {
                     textExpanded = false
                 }
             }
@@ -134,6 +192,9 @@ struct NotchIndicatorView: View {
         case .idle, .promptSelection, .promptProcessing:
             return String(localized: "Idle")
         case .recording:
+            if let warning = viewModel.recordingCancelWarningMessage {
+                return warning
+            }
             return String(localized: "Recording")
         case .processing:
             return String(localized: "Processing transcription")
@@ -149,10 +210,63 @@ struct NotchIndicatorView: View {
 
     // MARK: - Status bar (three-zone layout)
 
+    private var notchCap: some View {
+        statusBar
+            .frame(width: currentWidth, height: geometry.notchHeight)
+            .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var expandedBody: some View {
+        expandedBodyContent
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(height: expandedBodyHeight, alignment: .top)
+            .clipped()
+            .opacity(expandedBodyHeight > 0 ? 1 : 0)
+    }
+
+    @ViewBuilder
+    private var expandedBodyContent: some View {
+        if hasRecordingCancelWarning {
+            IndicatorActionFeedback(
+                message: viewModel.recordingCancelWarningMessage ?? "",
+                icon: "exclamationmark.triangle.fill",
+                isError: false,
+                iconColor: .yellow,
+                contentPadding: contentPadding
+            )
+        } else if hasTranscriptSection {
+            IndicatorExpandableText(
+                text: viewModel.partialText,
+                fontSize: transcriptFontSize,
+                expandedHeight: viewModel.indicatorTranscriptPreviewExpandedHeight(for: .notch),
+                expanded: true,
+                contentPadding: 34
+            )
+            .opacity(textExpanded ? 1 : 0.72)
+        } else if hasProcessingPhase {
+            Text(viewModel.processingPhase ?? "")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+        } else if hasActionFeedback {
+            IndicatorActionFeedback(
+                message: viewModel.actionFeedbackMessage ?? "",
+                icon: viewModel.actionFeedbackIcon,
+                isError: viewModel.actionFeedbackIsError,
+                iconColor: nil,
+                contentPadding: contentPadding
+            )
+        } else {
+            Color.clear
+        }
+    }
+
     @ViewBuilder
     private var statusBar: some View {
         HStack(spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: leftStatusSpacing) {
                 IndicatorLeftStatus(
                     viewModel: viewModel,
                     sizing: sizing,
@@ -162,7 +276,7 @@ struct NotchIndicatorView: View {
                 leftContent
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(.leading, 20)
+            .padding(.leading, NotchIndicatorLayout.leadingInset)
 
             if geometry.hasNotch {
                 Color.clear
@@ -171,7 +285,7 @@ struct NotchIndicatorView: View {
 
             rightContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                .padding(.trailing, 34)
+                .padding(.trailing, NotchIndicatorLayout.trailingInset)
         }
     }
 

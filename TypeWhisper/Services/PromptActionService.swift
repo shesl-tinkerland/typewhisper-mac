@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Combine
 import os.log
+import TypeWhisperPluginSDK
 
 private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "TypeWhisper", category: "PromptActionService")
 
@@ -80,7 +81,12 @@ class PromptActionService: ObservableObject {
                     prompt: preset.prompt,
                     icon: preset.icon,
                     isPreset: true,
-                    sortOrder: nextSortOrder + offset
+                    sortOrder: nextSortOrder + offset,
+                    providerType: preset.providerType,
+                    cloudModel: preset.cloudModel,
+                    temperatureModeRaw: preset.temperatureModeRaw,
+                    temperatureValue: preset.temperatureValue,
+                    targetActionPluginId: preset.targetActionPluginId
                 )
                 context.insert(newAction)
             }
@@ -103,7 +109,12 @@ class PromptActionService: ObservableObject {
             prompt: preset.prompt,
             icon: preset.icon,
             isPreset: true,
-            sortOrder: maxOrder + 1
+            sortOrder: maxOrder + 1,
+            providerType: preset.providerType,
+            cloudModel: preset.cloudModel,
+            temperatureModeRaw: preset.temperatureModeRaw,
+            temperatureValue: preset.temperatureValue,
+            targetActionPluginId: preset.targetActionPluginId
         )
 
         context.insert(newAction)
@@ -116,17 +127,31 @@ class PromptActionService: ObservableObject {
         }
     }
 
-    func addAction(name: String, prompt: String, icon: String = "sparkles", providerType: String? = nil, cloudModel: String? = nil, targetActionPluginId: String? = nil) {
-        guard let context = modelContext else { return }
+    @discardableResult
+    func addAction(
+        name: String,
+        prompt: String,
+        icon: String = "sparkles",
+        isEnabled: Bool = true,
+        providerType: String? = nil,
+        cloudModel: String? = nil,
+        temperatureModeRaw: String = PluginLLMTemperatureMode.inheritProviderSetting.rawValue,
+        temperatureValue: Double? = nil,
+        targetActionPluginId: String? = nil
+    ) -> PromptAction? {
+        guard let context = modelContext else { return nil }
 
         let maxOrder = promptActions.map(\.sortOrder).max() ?? -1
         let action = PromptAction(
             name: name,
             prompt: prompt,
             icon: icon,
+            isEnabled: isEnabled,
             sortOrder: maxOrder + 1,
             providerType: providerType,
             cloudModel: cloudModel,
+            temperatureModeRaw: temperatureModeRaw,
+            temperatureValue: temperatureValue,
             targetActionPluginId: targetActionPluginId
         )
 
@@ -138,16 +163,33 @@ class PromptActionService: ObservableObject {
         } catch {
             logger.error("Failed to save prompt action: \(error.localizedDescription)")
         }
+
+        return action
     }
 
-    func updateAction(_ action: PromptAction, name: String, prompt: String, icon: String, providerType: String? = nil, cloudModel: String? = nil, targetActionPluginId: String? = nil) {
-        guard let context = modelContext else { return }
+    @discardableResult
+    func updateAction(
+        _ action: PromptAction,
+        name: String,
+        prompt: String,
+        icon: String,
+        isEnabled: Bool = true,
+        providerType: String? = nil,
+        cloudModel: String? = nil,
+        temperatureModeRaw: String = PluginLLMTemperatureMode.inheritProviderSetting.rawValue,
+        temperatureValue: Double? = nil,
+        targetActionPluginId: String? = nil
+    ) -> PromptAction? {
+        guard let context = modelContext else { return nil }
 
         action.name = name
         action.prompt = prompt
         action.icon = icon
+        action.isEnabled = isEnabled
         action.providerType = providerType
         action.cloudModel = cloudModel
+        action.temperatureModeRaw = temperatureModeRaw
+        action.temperatureValue = temperatureValue
         action.targetActionPluginId = targetActionPluginId
         action.updatedAt = Date()
 
@@ -157,6 +199,8 @@ class PromptActionService: ObservableObject {
         } catch {
             logger.error("Failed to update prompt action: \(error.localizedDescription)")
         }
+
+        return action
     }
 
     func deleteAction(_ action: PromptAction) {

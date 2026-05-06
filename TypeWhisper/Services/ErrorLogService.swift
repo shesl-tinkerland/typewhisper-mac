@@ -16,6 +16,7 @@ private struct DiagnosticsReport: Encodable {
         let macOSVersion: String
         let localeIdentifier: String
         let timeZoneIdentifier: String
+        let cpuArchitecture: String
     }
 
     struct PermissionsInfo: Encodable {
@@ -37,6 +38,23 @@ private struct DiagnosticsReport: Encodable {
         let port: UInt16
         let loopbackOnly: Bool
         let remoteAccessAllowed: Bool
+    }
+
+    struct AudioOutputInfo: Encodable {
+        let deviceID: UInt32
+        let uid: String?
+        let name: String?
+        let volume: Float
+        let transportType: String?
+    }
+
+    struct AudioInfo: Encodable {
+        let selectedInputDeviceUID: String?
+        let selectedInputDeviceName: String?
+        let audioDuckingEnabled: Bool
+        let audioDuckingLevel: Double
+        let mediaPauseEnabled: Bool
+        let defaultOutput: AudioOutputInfo?
     }
 
     struct PluginInfo: Encodable {
@@ -61,6 +79,7 @@ private struct DiagnosticsReport: Encodable {
         let soundFeedbackEnabled: Bool
         let spokenFeedbackEnabled: Bool
         let showMenuBarIcon: Bool
+        let dockIconBehaviorWhenMenuBarHidden: String
         let watchFolderAutoStart: Bool
         let setupWizardCompleted: Bool
         let preferredAppLanguage: String?
@@ -89,6 +108,7 @@ private struct DiagnosticsReport: Encodable {
     let permissions: PermissionsInfo
     let model: ModelInfo
     let api: APIInfo
+    let audio: AudioInfo
     let plugins: [PluginInfo]
     let settings: SettingsSnapshot
     let counts: Counts
@@ -139,6 +159,7 @@ final class ErrorLogService: ObservableObject {
         let container = ServiceContainer.shared
         let defaults = UserDefaults.standard
         let pluginManager = PluginManager.shared ?? container.pluginManager
+        let outputSnapshot = CoreAudioOutputVolumeController().defaultOutputSnapshot()
 
         return DiagnosticsReport(
             exportedAt: Date(),
@@ -151,7 +172,8 @@ final class ErrorLogService: ObservableObject {
             system: .init(
                 macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
                 localeIdentifier: Locale.current.identifier,
-                timeZoneIdentifier: TimeZone.current.identifier
+                timeZoneIdentifier: TimeZone.current.identifier,
+                cpuArchitecture: RuntimeArchitecture.current
             ),
             permissions: .init(
                 microphoneGranted: AVAudioApplication.shared.recordPermission == .granted,
@@ -170,6 +192,22 @@ final class ErrorLogService: ObservableObject {
                 port: container.apiServerViewModel.port,
                 loopbackOnly: true,
                 remoteAccessAllowed: false
+            ),
+            audio: .init(
+                selectedInputDeviceUID: defaults.string(forKey: UserDefaultsKeys.selectedInputDeviceUID),
+                selectedInputDeviceName: container.audioDeviceService.selectedDevice?.name,
+                audioDuckingEnabled: defaults.bool(forKey: UserDefaultsKeys.audioDuckingEnabled),
+                audioDuckingLevel: defaults.object(forKey: UserDefaultsKeys.audioDuckingLevel) as? Double ?? 0.2,
+                mediaPauseEnabled: defaults.bool(forKey: UserDefaultsKeys.mediaPauseEnabled),
+                defaultOutput: outputSnapshot.map {
+                    .init(
+                        deviceID: $0.deviceID,
+                        uid: $0.deviceUID,
+                        name: $0.deviceName,
+                        volume: $0.volume,
+                        transportType: $0.transportType
+                    )
+                }
             ),
             plugins: pluginManager.loadedPlugins.map {
                 .init(
@@ -194,6 +232,7 @@ final class ErrorLogService: ObservableObject {
                 soundFeedbackEnabled: defaults.object(forKey: UserDefaultsKeys.soundFeedbackEnabled) as? Bool ?? true,
                 spokenFeedbackEnabled: defaults.bool(forKey: UserDefaultsKeys.spokenFeedbackEnabled),
                 showMenuBarIcon: defaults.object(forKey: UserDefaultsKeys.showMenuBarIcon) as? Bool ?? true,
+                dockIconBehaviorWhenMenuBarHidden: defaults.string(forKey: UserDefaultsKeys.dockIconBehaviorWhenMenuBarHidden) ?? DockIconBehavior.keepVisible.rawValue,
                 watchFolderAutoStart: defaults.bool(forKey: UserDefaultsKeys.watchFolderAutoStart),
                 setupWizardCompleted: defaults.bool(forKey: UserDefaultsKeys.setupWizardCompleted),
                 preferredAppLanguage: defaults.string(forKey: UserDefaultsKeys.preferredAppLanguage)

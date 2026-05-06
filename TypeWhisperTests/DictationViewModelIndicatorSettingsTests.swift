@@ -39,6 +39,34 @@ final class DictationViewModelIndicatorSettingsTests: XCTestCase {
         XCTAssertTrue(DictationViewModel.loadIndicatorTranscriptPreviewEnabled(defaults: defaults))
     }
 
+    func testIndicatorTranscriptPreviewFontSizeOffsetDefaultsToZero() {
+        XCTAssertEqual(DictationViewModel.loadIndicatorTranscriptPreviewFontSizeOffset(defaults: defaults), 0)
+    }
+
+    func testIndicatorTranscriptPreviewFontSizeOffsetPersistsClampedValue() {
+        DictationViewModel.persistIndicatorTranscriptPreviewFontSizeOffset(99, defaults: defaults)
+
+        XCTAssertEqual(defaults.object(forKey: UserDefaultsKeys.indicatorTranscriptPreviewFontSizeOffset) as? Int, 8)
+        XCTAssertEqual(DictationViewModel.loadIndicatorTranscriptPreviewFontSizeOffset(defaults: defaults), 8)
+    }
+
+    func testMissingIndicatorTranscriptPreviewFontSizeOffsetFallsBackToZero() {
+        defaults.removeObject(forKey: UserDefaultsKeys.indicatorTranscriptPreviewFontSizeOffset)
+
+        XCTAssertEqual(DictationViewModel.loadIndicatorTranscriptPreviewFontSizeOffset(defaults: defaults), 0)
+    }
+
+    func testInvalidIndicatorTranscriptPreviewFontSizeOffsetFallsBackToZero() {
+        defaults.set("large", forKey: UserDefaultsKeys.indicatorTranscriptPreviewFontSizeOffset)
+
+        XCTAssertEqual(DictationViewModel.loadIndicatorTranscriptPreviewFontSizeOffset(defaults: defaults), 0)
+    }
+
+    func testIndicatorTranscriptPreviewFontSizeDefaultsMatchCurrentStyles() {
+        XCTAssertEqual(DictationViewModel.indicatorTranscriptPreviewFontSize(for: .notch, offset: 0), 12)
+        XCTAssertEqual(DictationViewModel.indicatorTranscriptPreviewFontSize(for: .overlay, offset: 0), 13)
+    }
+
     func testIndicatorStyleDefaultsToNotch() {
         defaults.removeObject(forKey: UserDefaultsKeys.indicatorStyle)
 
@@ -56,5 +84,331 @@ final class DictationViewModelIndicatorSettingsTests: XCTestCase {
         defaults.set("mystery", forKey: UserDefaultsKeys.indicatorStyle)
 
         XCTAssertEqual(DictationViewModel.loadIndicatorStyle(defaults: defaults), .notch)
+    }
+
+    func testAggressiveShortSpeechTranscriptionDefaultsToEnabled() {
+        XCTAssertTrue(DictationViewModel.loadTranscribeShortQuietClipsAggressively(defaults: defaults))
+    }
+
+    func testAggressiveShortSpeechTranscriptionPersistsWhenEnabled() {
+        DictationViewModel.persistTranscribeShortQuietClipsAggressively(true, defaults: defaults)
+
+        XCTAssertEqual(
+            defaults.object(forKey: UserDefaultsKeys.transcribeShortQuietClipsAggressively) as? Bool,
+            true
+        )
+        XCTAssertTrue(DictationViewModel.loadTranscribeShortQuietClipsAggressively(defaults: defaults))
+    }
+}
+
+final class IndicatorScreenResolverTests: XCTestCase {
+    @MainActor
+    func testActiveScreenPrefersFocusedElementBeforeWindowLookup() throws {
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        var windowLookupCalled = false
+        var mouseLookupCalled = false
+
+        let resolver = IndicatorScreenResolver(
+            focusedElementPositionProvider: { CGPoint(x: screen.frame.midX, y: screen.frame.midY) },
+            frontmostApplicationProvider: { NSRunningApplication.current },
+            mouseLocationProvider: {
+                mouseLookupCalled = true
+                return .zero
+            },
+            screensProvider: { [screen] },
+            mainScreenProvider: { screen },
+            windowFrameProvider: { _ in
+                windowLookupCalled = true
+                return screen.frame
+            }
+        )
+
+        let resolvedScreen = resolver.resolveScreen(for: .activeScreen)
+
+        XCTAssertTrue(resolvedScreen === screen)
+        XCTAssertFalse(windowLookupCalled)
+        XCTAssertFalse(mouseLookupCalled)
+    }
+
+    @MainActor
+    func testActiveScreenUsesWindowFrameBeforeMouseFallback() throws {
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        var mouseLookupCalled = false
+
+        let resolver = IndicatorScreenResolver(
+            focusedElementPositionProvider: { nil },
+            focusedWindowFrameProvider: { nil },
+            frontmostApplicationProvider: { NSRunningApplication.current },
+            mouseLocationProvider: {
+                mouseLookupCalled = true
+                return .zero
+            },
+            screensProvider: { [screen] },
+            mainScreenProvider: { screen },
+            windowFrameProvider: { _ in screen.frame }
+        )
+
+        let resolvedScreen = resolver.resolveScreen(for: .activeScreen)
+
+        XCTAssertTrue(resolvedScreen === screen)
+        XCTAssertFalse(mouseLookupCalled)
+    }
+
+    @MainActor
+    func testActiveScreenUsesFocusedWindowBeforeFrontmostApplicationFallback() throws {
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        var frontmostWindowLookupCalled = false
+        var mouseLookupCalled = false
+
+        let resolver = IndicatorScreenResolver(
+            focusedElementPositionProvider: { nil },
+            focusedWindowFrameProvider: { screen.frame },
+            frontmostApplicationProvider: { NSRunningApplication.current },
+            mouseLocationProvider: {
+                mouseLookupCalled = true
+                return .zero
+            },
+            screensProvider: { [screen] },
+            mainScreenProvider: { screen },
+            windowFrameProvider: { _ in
+                frontmostWindowLookupCalled = true
+                return .zero
+            }
+        )
+
+        let resolvedScreen = resolver.resolveScreen(for: .activeScreen)
+
+        XCTAssertTrue(resolvedScreen === screen)
+        XCTAssertFalse(frontmostWindowLookupCalled)
+        XCTAssertFalse(mouseLookupCalled)
+    }
+
+    @MainActor
+    func testActiveScreenFallsBackToMouseLocation() throws {
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        var mouseLookupCalled = false
+
+        let resolver = IndicatorScreenResolver(
+            focusedElementPositionProvider: { nil },
+            focusedWindowFrameProvider: { nil },
+            frontmostApplicationProvider: { NSRunningApplication.current },
+            mouseLocationProvider: {
+                mouseLookupCalled = true
+                return CGPoint(x: screen.frame.midX, y: screen.frame.midY)
+            },
+            screensProvider: { [screen] },
+            mainScreenProvider: { screen },
+            windowFrameProvider: { _ in nil }
+        )
+
+        let resolvedScreen = resolver.resolveScreen(for: .activeScreen)
+
+        XCTAssertTrue(resolvedScreen === screen)
+        XCTAssertTrue(mouseLookupCalled)
+    }
+}
+
+final class DockIconVisibilityTests: XCTestCase {
+    func testDockIconStaysHiddenWhenMenuBarIconIsVisibleAndNoWindowIsOpen() {
+        XCTAssertFalse(
+            DockIconVisibility.shouldShowDockIcon(
+                showMenuBarIcon: true,
+                dockIconBehavior: .keepVisible,
+                hasVisibleManagedWindow: false
+            )
+        )
+    }
+
+    func testDockIconStaysVisibleWhenMenuBarIconIsHiddenAndBehaviorKeepsItVisible() {
+        XCTAssertTrue(
+            DockIconVisibility.shouldShowDockIcon(
+                showMenuBarIcon: false,
+                dockIconBehavior: .keepVisible,
+                hasVisibleManagedWindow: false
+            )
+        )
+    }
+
+    func testDockIconStaysHiddenWhenMenuBarIconIsHiddenAndBehaviorRequiresWindow() {
+        XCTAssertFalse(
+            DockIconVisibility.shouldShowDockIcon(
+                showMenuBarIcon: false,
+                dockIconBehavior: .onlyWhileWindowOpen,
+                hasVisibleManagedWindow: false
+            )
+        )
+    }
+
+    func testDockIconAppearsWhileManagedWindowIsVisibleEvenWhenBehaviorRequiresWindow() {
+        XCTAssertTrue(
+            DockIconVisibility.shouldShowDockIcon(
+                showMenuBarIcon: false,
+                dockIconBehavior: .onlyWhileWindowOpen,
+                hasVisibleManagedWindow: true
+            )
+        )
+    }
+
+    func testDockIconAppearsForInteractiveForegroundContent() {
+        XCTAssertTrue(
+            DockIconVisibility.shouldShowDockIcon(
+                showMenuBarIcon: true,
+                dockIconBehavior: .onlyWhileWindowOpen,
+                hasVisibleManagedWindow: false,
+                hasInteractiveForegroundContent: true
+            )
+        )
+    }
+}
+
+final class MenuBarGroupingTests: XCTestCase {
+    func testMenuBarSectionsUseExpectedOrderAndLocalizedKeys() {
+        XCTAssertEqual(
+            MenuBarMenuSection.allCases.map(\.titleLocalizationKey),
+            ["General", "Recorder", "Transcription", "Updates"]
+        )
+    }
+
+    func testMenuBarSectionsContainExpectedItems() {
+        XCTAssertEqual(
+            MenuBarMenuSection.general.items,
+            [.settings, .history, .errorLog]
+        )
+        XCTAssertEqual(
+            MenuBarMenuSection.recorder.items,
+            [.toggleRecorder]
+        )
+        XCTAssertEqual(
+            MenuBarMenuSection.transcription.items,
+            [.transcribeFile, .recentTranscriptions, .copyLastTranscription, .readBackLastTranscription]
+        )
+        XCTAssertEqual(
+            MenuBarMenuSection.updates.items,
+            [.checkForUpdates]
+        )
+    }
+}
+
+final class RecorderMenuActionStateTests: XCTestCase {
+    func testRecorderToggleIsEnabledWhenIdleAndMicIsEnabled() {
+        XCTAssertTrue(
+            AudioRecorderViewModel.canToggleRecording(
+                state: .idle,
+                micEnabled: true,
+                systemAudioEnabled: false
+            )
+        )
+    }
+
+    func testRecorderToggleIsEnabledWhenIdleAndSystemAudioIsEnabled() {
+        XCTAssertTrue(
+            AudioRecorderViewModel.canToggleRecording(
+                state: .idle,
+                micEnabled: false,
+                systemAudioEnabled: true
+            )
+        )
+    }
+
+    func testRecorderToggleIsEnabledWhileRecording() {
+        XCTAssertTrue(
+            AudioRecorderViewModel.canToggleRecording(
+                state: .recording,
+                micEnabled: false,
+                systemAudioEnabled: false
+            )
+        )
+    }
+
+    func testRecorderToggleIsDisabledWhileFinalizing() {
+        XCTAssertFalse(
+            AudioRecorderViewModel.canToggleRecording(
+                state: .finalizing,
+                micEnabled: true,
+                systemAudioEnabled: true
+            )
+        )
+    }
+
+    func testRecorderToggleIsDisabledWhenIdleWithoutEnabledSources() {
+        XCTAssertFalse(
+            AudioRecorderViewModel.canToggleRecording(
+                state: .idle,
+                micEnabled: false,
+                systemAudioEnabled: false
+            )
+        )
+    }
+}
+
+final class LanguageLocalizationTests: XCTestCase {
+    private var originalPreferredAppLanguage: String?
+    private var originalPluginManager: PluginManager?
+
+    override func setUp() {
+        super.setUp()
+        originalPreferredAppLanguage = UserDefaults.standard.string(forKey: UserDefaultsKeys.preferredAppLanguage)
+        originalPluginManager = PluginManager.shared
+    }
+
+    override func tearDown() {
+        if let originalPreferredAppLanguage {
+            UserDefaults.standard.set(originalPreferredAppLanguage, forKey: UserDefaultsKeys.preferredAppLanguage)
+        } else {
+            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.preferredAppLanguage)
+        }
+        PluginManager.shared = originalPluginManager
+        originalPluginManager = nil
+        super.tearDown()
+    }
+
+    func testLocalizedAppLanguageOptionsFollowPreferredAppLanguage() {
+        UserDefaults.standard.set("en", forKey: UserDefaultsKeys.preferredAppLanguage)
+
+        let options = localizedAppLanguageOptions(for: ["de", "en"])
+
+        XCTAssertEqual(options.map(\.code), ["de", "en"])
+        XCTAssertEqual(options.map(\.name), ["German", "English"])
+    }
+
+    func testLanguageSearchTermsIncludeEnglishAliasForEnglish() {
+        UserDefaults.standard.set("de", forKey: UserDefaultsKeys.preferredAppLanguage)
+
+        let searchTerms = localizedAppLanguageSearchTerms(for: "en")
+
+        XCTAssertTrue(searchTerms.contains(where: { $0.localizedCaseInsensitiveContains("english") }))
+        XCTAssertTrue(searchTerms.contains(where: { $0.localizedCaseInsensitiveContains("englisch") }))
+    }
+
+    func testLocalizedAppLanguageNameDisplaysDeepgramMultilingualCode() {
+        UserDefaults.standard.set("en", forKey: UserDefaultsKeys.preferredAppLanguage)
+        XCTAssertEqual(localizedAppLanguageName(for: "multi"), "Multilingual")
+
+        UserDefaults.standard.set("de", forKey: UserDefaultsKeys.preferredAppLanguage)
+        XCTAssertEqual(localizedAppLanguageName(for: "multi"), "Mehrsprachig")
+    }
+
+    func testLanguageSearchTermsIncludeDeepgramMultilingualAliases() {
+        UserDefaults.standard.set("de", forKey: UserDefaultsKeys.preferredAppLanguage)
+
+        let searchTerms = localizedAppLanguageSearchTerms(for: "multi")
+
+        XCTAssertTrue(searchTerms.contains(where: { $0.caseInsensitiveCompare("multi") == .orderedSame }))
+        XCTAssertTrue(searchTerms.contains(where: { $0.caseInsensitiveCompare("Multilingual") == .orderedSame }))
+        XCTAssertTrue(searchTerms.contains(where: { $0.caseInsensitiveCompare("Mehrsprachig") == .orderedSame }))
+    }
+
+    @MainActor
+    func testSettingsLanguageOptionsDoNotGoEmptyBeforePluginsLoad() throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "LanguageFallbackTests")
+        defer { TestSupport.remove(appSupportDirectory) }
+        PluginManager.shared = PluginManager(appSupportDirectory: appSupportDirectory)
+
+        let settingsViewModel = SettingsViewModel(modelManager: ModelManagerService())
+        let codes = Set(settingsViewModel.availableLanguages.map(\.code))
+
+        XCTAssertTrue(codes.contains("en"))
+        XCTAssertTrue(codes.contains("de"))
+        XCTAssertTrue(codes.contains("fr"))
     }
 }

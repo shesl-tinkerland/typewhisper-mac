@@ -9,6 +9,9 @@ struct UnifiedHotkey: Equatable, Hashable, Sendable, Codable {
     let modifierFlags: UInt
     let isFn: Bool
     let isDoubleTap: Bool
+    /// Physical modifier key codes for side-specific modifier combos.
+    /// Empty means legacy/generic matching by modifier flags only.
+    let modifierKeyCodes: Set<UInt16>
     /// nil = keyboard hotkey; 0..N = mouse button number (macOS convention: 2=middle, 3=back, 4=forward)
     let mouseButton: UInt16?
 
@@ -34,11 +37,18 @@ struct UnifiedHotkey: Equatable, Hashable, Sendable, Codable {
         return .bareKey
     }
 
-    init(keyCode: UInt16, modifierFlags: UInt, isFn: Bool, isDoubleTap: Bool = false) {
+    init(
+        keyCode: UInt16,
+        modifierFlags: UInt,
+        isFn: Bool,
+        isDoubleTap: Bool = false,
+        modifierKeyCodes: Set<UInt16> = []
+    ) {
         self.keyCode = keyCode
         self.modifierFlags = modifierFlags
         self.isFn = isFn
         self.isDoubleTap = isDoubleTap
+        self.modifierKeyCodes = modifierKeyCodes
         self.mouseButton = nil
     }
 
@@ -47,17 +57,37 @@ struct UnifiedHotkey: Equatable, Hashable, Sendable, Codable {
         self.modifierFlags = 0
         self.isFn = false
         self.isDoubleTap = isDoubleTap
+        self.modifierKeyCodes = []
         self.mouseButton = mouseButton
     }
 
-    // Backward-compatible decoding: old hotkeys without isDoubleTap/mouseButton decode correctly
+    // Backward-compatible decoding: old hotkeys without isDoubleTap/modifierKeyCodes/mouseButton decode correctly
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         keyCode = try container.decode(UInt16.self, forKey: .keyCode)
         modifierFlags = try container.decode(UInt.self, forKey: .modifierFlags)
         isFn = try container.decode(Bool.self, forKey: .isFn)
         isDoubleTap = try container.decodeIfPresent(Bool.self, forKey: .isDoubleTap) ?? false
+        modifierKeyCodes = try container.decodeIfPresent(Set<UInt16>.self, forKey: .modifierKeyCodes) ?? []
         mouseButton = try container.decodeIfPresent(UInt16.self, forKey: .mouseButton)
+    }
+
+    func conflicts(with other: UnifiedHotkey) -> Bool {
+        if self == other { return true }
+        guard keyCode == other.keyCode,
+              modifierFlags == other.modifierFlags,
+              isFn == other.isFn,
+              mouseButton == other.mouseButton else {
+            return false
+        }
+
+        if kind == .modifierCombo, other.kind == .modifierCombo {
+            return modifierKeyCodes.isEmpty
+                || other.modifierKeyCodes.isEmpty
+                || modifierKeyCodes == other.modifierKeyCodes
+        }
+
+        return isDoubleTap != other.isDoubleTap
     }
 }
 
@@ -66,6 +96,9 @@ enum HotkeySlotType: String, CaseIterable, Sendable {
     case pushToTalk
     case toggle
     case promptPalette
+    case recentTranscriptions
+    case copyLastTranscription
+    case recorderToggle
 
     var defaultsKey: String {
         switch self {
@@ -73,14 +106,20 @@ enum HotkeySlotType: String, CaseIterable, Sendable {
         case .pushToTalk: return UserDefaultsKeys.pttHotkey
         case .toggle: return UserDefaultsKeys.toggleHotkey
         case .promptPalette: return UserDefaultsKeys.promptPaletteHotkey
+        case .recentTranscriptions: return UserDefaultsKeys.recentTranscriptionsHotkey
+        case .copyLastTranscription: return UserDefaultsKeys.copyLastTranscriptionHotkey
+        case .recorderToggle: return UserDefaultsKeys.recorderToggleHotkey
         }
     }
 }
 
-/// Manages global hotkeys for dictation with three independent slots:
-/// hybrid (short=toggle, long=push-to-talk), push-to-talk, and toggle.
-@MainActor
+/// Manages global hotkeys for dictation and standalone app actions.
 final class HotkeyService: ObservableObject {
+    struct MenuShortcutDescriptor: Equatable, Sendable {
+        let keyEquivalent: Character
+        let modifiers: NSEvent.ModifierFlags
+    }
+
     enum HotkeyEventSource: Sendable {
         case eventTap
         case monitor
@@ -95,6 +134,7 @@ final class HotkeyService: ObservableObject {
         enum Target: Hashable {
             case slot(HotkeySlotType)
             case profile(UUID)
+            case workflow(UUID)
         }
 
         let target: Target
@@ -107,18 +147,32 @@ final class HotkeyService: ObservableObject {
         case toggle
     }
 
+    private enum FnTriggerMode {
+        case pressThenRelease
+        case releaseOnly
+    }
+
     @Published private(set) var currentMode: HotkeyMode?
 
     var onDictationStart: (() -> Void)?
     var onDictationStop: (() -> Void)?
     var onPromptPaletteToggle: (() -> Void)?
+    var onRecentTranscriptionsToggle: (() -> Void)?
+    var onCopyLastTranscription: (() -> Void)?
+    var onRecorderToggle: (() -> Void)?
     var onProfileDictationStart: ((UUID) -> Void)?
+    var onWorkflowDictationStart: ((UUID) -> Void)?
+    var onWorkflowTextProcessing: ((UUID) -> Void)?
     var onCancelPressed: (() -> Void)?
+    var onPushToTalkInterruption: (() -> Void)?
+    var discardPushToTalkRecordingOnExtraKeyPress = false
 
     private var keyDownTime: Date?
     private var isActive = false
     private var activeSlotType: HotkeySlotType?
     private(set) var activeProfileId: UUID?
+    private(set) var activeWorkflowId: UUID?
+    private var pushToTalkInterruptionSignaled = false
 
     private static let toggleThreshold: TimeInterval = 1.0
     private static let doubleTapThreshold: TimeInterval = 0.4
@@ -155,6 +209,9 @@ final class HotkeyService: ObservableObject {
         .pushToTalk: SlotState(),
         .toggle: SlotState(),
         .promptPalette: SlotState(),
+        .recentTranscriptions: SlotState(),
+        .copyLastTranscription: SlotState(),
+        .recorderToggle: SlotState(),
     ]
 
     // MARK: - Per-Profile Hotkey State
@@ -183,6 +240,31 @@ final class HotkeyService: ObservableObject {
     }
 
     private var profileSlots: [UUID: ProfileHotkeyState] = [:]
+
+    private struct WorkflowHotkeyState {
+        let workflowId: UUID
+        var hotkey: UnifiedHotkey
+        var behavior: WorkflowHotkeyBehavior
+        var fnWasDown = false
+        var fnComboKeyPressed = false
+        var modifierWasDown = false
+        var keyWasDown = false
+        var mouseButtonWasDown = false
+        var lastTapUpTime: Date?
+        var tapCount: Int = 0
+
+        mutating func resetTransientState() {
+            fnWasDown = false
+            fnComboKeyPressed = false
+            modifierWasDown = false
+            keyWasDown = false
+            mouseButtonWasDown = false
+            lastTapUpTime = nil
+            tapCount = 0
+        }
+    }
+
+    private var workflowSlots: [UUID: [WorkflowHotkeyState]] = [:]
 
     private var globalMonitor: Any?
     private var localMonitor: Any?
@@ -229,12 +311,7 @@ final class HotkeyService: ObservableObject {
     func isHotkeyAssigned(_ hotkey: UnifiedHotkey, excluding: HotkeySlotType) -> HotkeySlotType? {
         for slotType in HotkeySlotType.allCases where slotType != excluding {
             guard let existing = slots[slotType]?.hotkey else { continue }
-            if existing == hotkey { return slotType }
-            if existing.keyCode == hotkey.keyCode
-                && existing.modifierFlags == hotkey.modifierFlags
-                && existing.isFn == hotkey.isFn
-                && existing.mouseButton == hotkey.mouseButton
-                && existing.isDoubleTap != hotkey.isDoubleTap {
+            if existing.conflicts(with: hotkey) {
                 return slotType
             }
         }
@@ -251,8 +328,10 @@ final class HotkeyService: ObservableObject {
         isActive = false
         activeSlotType = nil
         activeProfileId = nil
+        activeWorkflowId = nil
         currentMode = nil
         keyDownTime = nil
+        pushToTalkInterruptionSignaled = false
     }
 
     // MARK: - Profile Hotkeys
@@ -266,15 +345,32 @@ final class HotkeyService: ObservableObject {
         setupMonitor()
     }
 
+    func registerWorkflowHotkeys(_ entries: [(id: UUID, hotkey: UnifiedHotkey, behavior: WorkflowHotkeyBehavior)]) {
+        workflowSlots.removeAll()
+        for entry in entries {
+            workflowSlots[entry.id, default: []].append(
+                WorkflowHotkeyState(workflowId: entry.id, hotkey: entry.hotkey, behavior: entry.behavior)
+            )
+        }
+        tearDownMonitor()
+        setupMonitor()
+    }
+
     func isHotkeyAssignedToProfile(_ hotkey: UnifiedHotkey, excludingProfileId: UUID?) -> UUID? {
         for (id, state) in profileSlots where id != excludingProfileId {
-            if state.hotkey == hotkey { return id }
-            if state.hotkey.keyCode == hotkey.keyCode
-                && state.hotkey.modifierFlags == hotkey.modifierFlags
-                && state.hotkey.isFn == hotkey.isFn
-                && state.hotkey.mouseButton == hotkey.mouseButton
-                && state.hotkey.isDoubleTap != hotkey.isDoubleTap {
+            if state.hotkey.conflicts(with: hotkey) {
                 return id
+            }
+        }
+        return nil
+    }
+
+    func isHotkeyAssignedToWorkflow(_ hotkey: UnifiedHotkey, excludingWorkflowId: UUID?) -> UUID? {
+        for (id, states) in workflowSlots where id != excludingWorkflowId {
+            for state in states {
+                if state.hotkey.conflicts(with: hotkey) {
+                    return id
+                }
             }
         }
         return nil
@@ -283,12 +379,7 @@ final class HotkeyService: ObservableObject {
     func isHotkeyAssignedToGlobalSlot(_ hotkey: UnifiedHotkey) -> HotkeySlotType? {
         for slotType in HotkeySlotType.allCases {
             guard let existing = slots[slotType]?.hotkey else { continue }
-            if existing == hotkey { return slotType }
-            if existing.keyCode == hotkey.keyCode
-                && existing.modifierFlags == hotkey.modifierFlags
-                && existing.isFn == hotkey.isFn
-                && existing.mouseButton == hotkey.mouseButton
-                && existing.isDoubleTap != hotkey.isDoubleTap {
+            if existing.conflicts(with: hotkey) {
                 return slotType
             }
         }
@@ -330,15 +421,11 @@ final class HotkeyService: ObservableObject {
         }
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            Task { @MainActor [weak self] in
-                _ = self?.handleEvent(event, source: .monitor)
-            }
+            _ = self?.handleEvent(event, source: .monitor)
         }
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            Task { @MainActor [weak self] in
-                _ = self?.handleEvent(event, source: .monitor)
-            }
+            _ = self?.handleEvent(event, source: .monitor)
             return event
         }
     }
@@ -386,17 +473,13 @@ final class HotkeyService: ObservableObject {
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
         // @convention(c) callback - must not capture context. Uses userInfo to access HotkeyService.
-        // Runs on the main thread (tap is added to main run loop), so MainActor.assumeIsolated is safe.
+        // The tap source is attached to the main run loop, but this callback does not execute as a
+        // MainActor task. Avoid MainActor runtime assumptions and route through unsafe main-thread-only helpers.
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                 if let userInfo {
-                    MainActor.assumeIsolated {
-                        let service = Unmanaged<HotkeyService>.fromOpaque(userInfo).takeUnretainedValue()
-                        if let tap = service.eventTap {
-                            CGEvent.tapEnable(tap: tap, enable: true)
-                        }
-                        service.logger.warning("CGEventTap was disabled by system, re-enabling")
-                    }
+                    let service = Unmanaged<HotkeyService>.fromOpaque(userInfo).takeUnretainedValue()
+                    service.reenableEventTapAfterSystemDisable()
                 }
                 return Unmanaged.passUnretained(event)
             }
@@ -405,12 +488,8 @@ final class HotkeyService: ObservableObject {
                 return Unmanaged.passUnretained(event)
             }
 
-            let shouldSuppress: Bool = MainActor.assumeIsolated {
-                guard let nsEvent = NSEvent(cgEvent: event) else { return false }
-                let service = Unmanaged<HotkeyService>.fromOpaque(userInfo).takeUnretainedValue()
-                return service.handleEventTapEvent(nsEvent)
-            }
-
+            let service = Unmanaged<HotkeyService>.fromOpaque(userInfo).takeUnretainedValue()
+            let shouldSuppress = service.handleEventTapCallback(event)
             return shouldSuppress ? nil : Unmanaged.passUnretained(event)
         }
 
@@ -433,6 +512,18 @@ final class HotkeyService: ObservableObject {
         return true
     }
 
+    private func reenableEventTapAfterSystemDisable() {
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+        logger.warning("CGEventTap was disabled by system, re-enabling")
+    }
+
+    private func handleEventTapCallback(_ event: CGEvent) -> Bool {
+        guard let nsEvent = NSEvent(cgEvent: event) else { return false }
+        return handleEventTapEvent(nsEvent)
+    }
+
     /// Processes event for CGEventTap: matches hotkeys synchronously, dispatches handling asynchronously.
     /// Returns true if the event should be suppressed (consumed by TypeWhisper).
     private func handleEventTapEvent(_ event: NSEvent) -> Bool {
@@ -445,28 +536,29 @@ final class HotkeyService: ObservableObject {
     private func handleEvent(_ event: NSEvent, source: HotkeyEventSource) -> Bool {
         // Escape key cancels active recording/transcription
         if event.type == .keyDown && event.keyCode == 0x35 {
-            if source == .eventTap {
-                Task { @MainActor [weak self] in
-                    self?.onCancelPressed?()
-                }
-            } else {
-                onCancelPressed?()
-            }
+            onCancelPressed?()
             return false
         }
 
+        signalPushToTalkInterruptionIfNeeded(for: event)
         updateCapsLockOriginTracker(for: event)
         var shouldSuppress = false
 
         // Global slots
         for slotType in HotkeySlotType.allCases {
             guard var state = slots[slotType], let hotkey = state.hotkey else { continue }
+            let fnTriggerMode: FnTriggerMode = slotType == .toggle ? .releaseOnly : .pressThenRelease
             if shouldSuppressForCapsLockOrigin(event, hotkey: hotkey, keyWasDown: state.keyWasDown) {
                 state.resetTransientState()
                 slots[slotType] = state
                 continue
             }
-            let (keyDown, keyUp, isMatch) = processKeyEvent(event, hotkey: hotkey, state: &state)
+            let (keyDown, keyUp, isMatch) = processKeyEvent(
+                event,
+                hotkey: hotkey,
+                state: &state,
+                fnTriggerMode: fnTriggerMode
+            )
             slots[slotType] = state
             if isMatch { shouldSuppress = true }
             dispatchGlobalMatch(
@@ -491,7 +583,12 @@ final class HotkeyService: ObservableObject {
                                   modifierWasDown: pState.modifierWasDown, keyWasDown: pState.keyWasDown,
                                   mouseButtonWasDown: pState.mouseButtonWasDown,
                                   lastTapUpTime: pState.lastTapUpTime, tapCount: pState.tapCount)
-            let (keyDown, keyUp, isMatch) = processKeyEvent(event, hotkey: pState.hotkey, state: &state)
+            let (keyDown, keyUp, isMatch) = processKeyEvent(
+                event,
+                hotkey: pState.hotkey,
+                state: &state,
+                fnTriggerMode: .pressThenRelease
+            )
             pState.fnWasDown = state.fnWasDown
             pState.fnComboKeyPressed = state.fnComboKeyPressed
             pState.modifierWasDown = state.modifierWasDown
@@ -508,6 +605,53 @@ final class HotkeyService: ObservableObject {
                 keyUp: keyUp,
                 source: source
             )
+        }
+
+        // Workflow slots
+        for workflowId in Array(workflowSlots.keys) {
+            guard var states = workflowSlots[workflowId] else { continue }
+            for index in states.indices {
+                var wState = states[index]
+                if shouldSuppressForCapsLockOrigin(event, hotkey: wState.hotkey, keyWasDown: wState.keyWasDown) {
+                    wState.resetTransientState()
+                    states[index] = wState
+                    continue
+                }
+                var state = SlotState(
+                    hotkey: wState.hotkey,
+                    fnWasDown: wState.fnWasDown,
+                    fnComboKeyPressed: wState.fnComboKeyPressed,
+                    modifierWasDown: wState.modifierWasDown,
+                    keyWasDown: wState.keyWasDown,
+                    mouseButtonWasDown: wState.mouseButtonWasDown,
+                    lastTapUpTime: wState.lastTapUpTime,
+                    tapCount: wState.tapCount
+                )
+                let (keyDown, keyUp, isMatch) = processKeyEvent(
+                    event,
+                    hotkey: wState.hotkey,
+                    state: &state,
+                    fnTriggerMode: .pressThenRelease
+                )
+                wState.fnWasDown = state.fnWasDown
+                wState.fnComboKeyPressed = state.fnComboKeyPressed
+                wState.modifierWasDown = state.modifierWasDown
+                wState.keyWasDown = state.keyWasDown
+                wState.mouseButtonWasDown = state.mouseButtonWasDown
+                wState.lastTapUpTime = state.lastTapUpTime
+                wState.tapCount = state.tapCount
+                states[index] = wState
+                if isMatch { shouldSuppress = true }
+                dispatchWorkflowMatch(
+                    workflowId: workflowId,
+                    hotkey: wState.hotkey,
+                    behavior: wState.behavior,
+                    keyDown: keyDown,
+                    keyUp: keyUp,
+                    source: source
+                )
+            }
+            workflowSlots[workflowId] = states
         }
 
         return shouldSuppress
@@ -562,23 +706,17 @@ final class HotkeyService: ObservableObject {
             hotkey: hotkey,
             source: source
         ) {
-            if source == .eventTap {
-                Task { @MainActor [weak self] in self?.handleKeyDown(slotType: slotType) }
-            } else {
+            if source != .eventTap {
                 logFallbackMatchIfNeeded(hotkey: hotkey, source: source)
-                handleKeyDown(slotType: slotType)
             }
+            handleKeyDown(slotType: slotType)
         } else if keyUp, shouldDispatch(
             target: .slot(slotType),
             phase: .up,
             hotkey: hotkey,
             source: source
         ) {
-            if source == .eventTap {
-                Task { @MainActor [weak self] in self?.handleKeyUp(slotType: slotType) }
-            } else {
-                handleKeyUp(slotType: slotType)
-            }
+            handleKeyUp(slotType: slotType)
         }
     }
 
@@ -595,23 +733,73 @@ final class HotkeyService: ObservableObject {
             hotkey: hotkey,
             source: source
         ) {
-            if source == .eventTap {
-                Task { @MainActor [weak self] in self?.handleProfileKeyDown(profileId: profileId) }
-            } else {
+            if source != .eventTap {
                 logFallbackMatchIfNeeded(hotkey: hotkey, source: source)
-                handleProfileKeyDown(profileId: profileId)
             }
+            handleProfileKeyDown(profileId: profileId)
         } else if keyUp, shouldDispatch(
             target: .profile(profileId),
             phase: .up,
             hotkey: hotkey,
             source: source
         ) {
-            if source == .eventTap {
-                Task { @MainActor [weak self] in self?.handleProfileKeyUp(profileId: profileId) }
-            } else {
-                handleProfileKeyUp(profileId: profileId)
+            handleProfileKeyUp(profileId: profileId)
+        }
+    }
+
+    private func dispatchWorkflowMatch(
+        workflowId: UUID,
+        hotkey: UnifiedHotkey,
+        behavior: WorkflowHotkeyBehavior,
+        keyDown: Bool,
+        keyUp: Bool,
+        source: HotkeyEventSource
+    ) {
+        if keyDown, shouldDispatch(
+            target: .workflow(workflowId),
+            phase: .down,
+            hotkey: hotkey,
+            source: source
+        ) {
+            if source != .eventTap {
+                logFallbackMatchIfNeeded(hotkey: hotkey, source: source)
             }
+            handleWorkflowKeyDown(workflowId: workflowId, behavior: behavior)
+        } else if keyUp, shouldDispatch(
+            target: .workflow(workflowId),
+            phase: .up,
+            hotkey: hotkey,
+            source: source
+        ) {
+            handleWorkflowKeyUp(workflowId: workflowId, behavior: behavior)
+        }
+    }
+
+    private func signalPushToTalkInterruptionIfNeeded(for event: NSEvent) {
+        guard discardPushToTalkRecordingOnExtraKeyPress,
+              !pushToTalkInterruptionSignaled,
+              isActive,
+              activeSlotType == .pushToTalk,
+              activeProfileId == nil,
+              activeWorkflowId == nil,
+              event.type == .keyDown,
+              let hotkey = slots[.pushToTalk]?.hotkey,
+              isExtraKeyDuringActivePushToTalk(event, hotkey: hotkey) else {
+            return
+        }
+
+        pushToTalkInterruptionSignaled = true
+        onPushToTalkInterruption?()
+    }
+
+    private func isExtraKeyDuringActivePushToTalk(_ event: NSEvent, hotkey: UnifiedHotkey) -> Bool {
+        switch hotkey.kind {
+        case .modifierCombo, .modifierOnly, .fn:
+            return true
+        case .keyWithModifiers, .bareKey:
+            return event.keyCode != hotkey.keyCode
+        case .mouseButton:
+            return false
         }
     }
 
@@ -659,9 +847,12 @@ final class HotkeyService: ObservableObject {
         case modifierRelease // Modifiers no longer match, but key is still physically down
     }
 
-    /// Processes a key event against a hotkey, updating state booleans.
-    /// Returns (keyDown, keyUp, shouldSuppress) flags.
-    private func processKeyEvent(_ event: NSEvent, hotkey: UnifiedHotkey, state: inout SlotState) -> (keyDown: Bool, keyUp: Bool, shouldSuppress: Bool) {
+    private func processKeyEvent(
+        _ event: NSEvent,
+        hotkey: UnifiedHotkey,
+        state: inout SlotState,
+        fnTriggerMode: FnTriggerMode
+    ) -> (keyDown: Bool, keyUp: Bool, shouldSuppress: Bool) {
         // Mouse button hotkeys - self-contained path (no modifier interplay)
         if hotkey.kind == .mouseButton {
             guard event.type == .otherMouseDown || event.type == .otherMouseUp else {
@@ -703,33 +894,68 @@ final class HotkeyService: ObservableObject {
             return (false, false, false)
         }
 
-        // Fn hotkeys fire on release to avoid conflicts with Fn+key combos
-        // (e.g. Fn+Backspace = forward delete, Fn+Arrow = page navigation)
+        // Fn hotkeys can run in two modes:
+        // - releaseOnly: keep current toggle behavior (start on release)
+        // - pressThenRelease: Hybrid/PTT/profiles should start on press and stop on release
         if hotkey.kind == .fn {
-            if state.fnWasDown && event.type == .keyDown {
-                state.fnComboKeyPressed = true
-                return (false, false, false)
-            }
-            guard event.type == .flagsChanged else { return (false, false, false) }
-            let fnDown = event.modifierFlags.contains(.function)
-            if fnDown, !state.fnWasDown {
-                state.fnWasDown = true
+            switch fnTriggerMode {
+            case .pressThenRelease:
+                if state.fnWasDown && event.type == .keyDown {
+                    state.fnComboKeyPressed = true
+                    return (false, false, false)
+                }
+
+                guard event.type == .flagsChanged else {
+                    return (false, false, false)
+                }
+
+                let fnDown = event.modifierFlags.contains(.function)
+                if fnDown, !state.fnWasDown {
+                    state.fnWasDown = true
+                    state.fnComboKeyPressed = false
+                    return (true, false, true)
+                }
+                guard !fnDown, state.fnWasDown else {
+                    return (false, false, false)
+                }
+                state.fnWasDown = false
+                let wasComboed = state.fnComboKeyPressed
                 state.fnComboKeyPressed = false
-                return (false, false, false)
+                if wasComboed { return (false, false, false) }
+                if hotkey.isDoubleTap {
+                    return (false, false, true)
+                }
+                return (false, true, true)
+
+            case .releaseOnly:
+                if state.fnWasDown && event.type == .keyDown {
+                    state.fnComboKeyPressed = true
+                    return (false, false, false)
+                }
+                guard event.type == .flagsChanged else { return (false, false, false) }
+                let fnDown = event.modifierFlags.contains(.function)
+                if fnDown, !state.fnWasDown {
+                    state.fnWasDown = true
+                    state.fnComboKeyPressed = false
+                    return (false, false, false)
+                }
+                guard !fnDown, state.fnWasDown else { return (false, false, false) }
+                state.fnWasDown = false
+                let wasComboed = state.fnComboKeyPressed
+                state.fnComboKeyPressed = false
+                if wasComboed { return (false, false, false) }
+                guard hotkey.isDoubleTap else { return (true, false, true) }
+                if state.tapCount == 1,
+                   let lastUp = state.lastTapUpTime,
+                   Date().timeIntervalSince(lastUp) < Self.doubleTapThreshold {
+                    state.tapCount = 0
+                    state.lastTapUpTime = nil
+                    return (true, false, true)
+                }
+                state.tapCount = 1
+                state.lastTapUpTime = Date()
+                return (false, false, true)
             }
-            guard !fnDown, state.fnWasDown else { return (false, false, false) }
-            state.fnWasDown = false
-            let wasComboed = state.fnComboKeyPressed
-            state.fnComboKeyPressed = false
-            if wasComboed { return (false, false, false) }
-            guard hotkey.isDoubleTap else { return (true, false, true) }
-            if state.tapCount == 1, let lastUp = state.lastTapUpTime,
-               Date().timeIntervalSince(lastUp) < Self.doubleTapThreshold {
-                state.tapCount = 0; state.lastTapUpTime = nil
-                return (true, false, true)
-            }
-            state.tapCount = 1; state.lastTapUpTime = Date()
-            return (false, false, true)
         }
 
         let result = detectKeyEvent(
@@ -832,15 +1058,18 @@ final class HotkeyService: ObservableObject {
             let requiredFlags = NSEvent.ModifierFlags(rawValue: hotkey.modifierFlags)
             let relevantMask: NSEvent.ModifierFlags = [.command, .option, .control, .shift, .function]
             let current = event.modifierFlags.intersection(relevantMask)
-            let allDown = current.contains(requiredFlags)
+            let activeModifierKeyCodes = Self.modifierKeyCodes(from: event.modifierFlags)
+            let physicalModifiersMatch = hotkey.modifierKeyCodes.isEmpty
+                || hotkey.modifierKeyCodes.isSubset(of: activeModifierKeyCodes)
+            let allDown = current.contains(requiredFlags) && physicalModifiersMatch
+            let anyRequiredStillDown = hotkey.modifierKeyCodes.isEmpty
+                ? !current.intersection(requiredFlags).isEmpty
+                : !activeModifierKeyCodes.intersection(hotkey.modifierKeyCodes).isEmpty
             if allDown, !modifierWasDown { return .down }
-            if !allDown, modifierWasDown {
-                // If the sentinel keyCode (0xFFFF) is used, we have no physical key to track.
-                // Otherwise, we'd need to track which modifiers are still down.
-                // For now, modifier-only combos don't have a 'base key'.
-                return .up
-            }
             if allDown, modifierWasDown { return .repeatDown }
+            if modifierWasDown {
+                return anyRequiredStillDown ? .repeatDown : .up
+            }
 
         case .keyWithModifiers:
             let requiredFlags = NSEvent.ModifierFlags(rawValue: hotkey.modifierFlags)
@@ -886,27 +1115,43 @@ final class HotkeyService: ObservableObject {
             onPromptPaletteToggle?()
             return
         }
+        if slotType == .recentTranscriptions {
+            onRecentTranscriptionsToggle?()
+            return
+        }
+        if slotType == .copyLastTranscription {
+            onCopyLastTranscription?()
+            return
+        }
+        if slotType == .recorderToggle {
+            onRecorderToggle?()
+            return
+        }
 
         if isActive {
             // Any hotkey stops active recording
             isActive = false
             activeSlotType = nil
             activeProfileId = nil
+            activeWorkflowId = nil
             currentMode = nil
             keyDownTime = nil
+            pushToTalkInterruptionSignaled = false
             onDictationStop?()
         } else {
             activeSlotType = slotType
             activeProfileId = nil
+            activeWorkflowId = nil
             keyDownTime = Date()
             isActive = true
+            pushToTalkInterruptionSignaled = false
             currentMode = slotType == .toggle ? .toggle : .pushToTalk
             onDictationStart?()
         }
     }
 
     private func handleKeyUp(slotType: HotkeySlotType) {
-        guard isActive, slotType == activeSlotType, activeProfileId == nil else { return }
+        guard isActive, slotType == activeSlotType, activeProfileId == nil, activeWorkflowId == nil else { return }
 
         switch slotType {
         case .hybrid:
@@ -918,6 +1163,7 @@ final class HotkeyService: ObservableObject {
                 activeSlotType = nil
                 currentMode = nil
                 keyDownTime = nil
+                pushToTalkInterruptionSignaled = false
                 onDictationStop?()
             }
         case .pushToTalk:
@@ -925,10 +1171,17 @@ final class HotkeyService: ObservableObject {
             activeSlotType = nil
             currentMode = nil
             keyDownTime = nil
+            pushToTalkInterruptionSignaled = false
             onDictationStop?()
         case .toggle:
             break
         case .promptPalette:
+            break // handled on keyDown only
+        case .recentTranscriptions:
+            break // handled on keyDown only
+        case .copyLastTranscription:
+            break // handled on keyDown only
+        case .recorderToggle:
             break // handled on keyDown only
         }
     }
@@ -941,14 +1194,18 @@ final class HotkeyService: ObservableObject {
             isActive = false
             activeSlotType = nil
             activeProfileId = nil
+            activeWorkflowId = nil
             currentMode = nil
             keyDownTime = nil
+            pushToTalkInterruptionSignaled = false
             onDictationStop?()
         } else {
             activeProfileId = profileId
+            activeWorkflowId = nil
             activeSlotType = nil
             keyDownTime = Date()
             isActive = true
+            pushToTalkInterruptionSignaled = false
             currentMode = .pushToTalk // hybrid behavior
             onProfileDictationStart?(profileId)
         }
@@ -965,13 +1222,81 @@ final class HotkeyService: ObservableObject {
             isActive = false
             activeSlotType = nil
             activeProfileId = nil
+            activeWorkflowId = nil
             currentMode = nil
             keyDownTime = nil
+            pushToTalkInterruptionSignaled = false
+            onDictationStop?()
+        }
+    }
+
+    // MARK: - Key Down / Up (Workflow Slots)
+
+    private func handleWorkflowKeyDown(workflowId: UUID, behavior: WorkflowHotkeyBehavior) {
+        guard behavior == .startDictation else {
+            onWorkflowTextProcessing?(workflowId)
+            return
+        }
+
+        if isActive {
+            isActive = false
+            activeSlotType = nil
+            activeProfileId = nil
+            activeWorkflowId = nil
+            currentMode = nil
+            keyDownTime = nil
+            pushToTalkInterruptionSignaled = false
+            onDictationStop?()
+        } else {
+            activeProfileId = nil
+            activeWorkflowId = workflowId
+            activeSlotType = nil
+            keyDownTime = Date()
+            isActive = true
+            pushToTalkInterruptionSignaled = false
+            currentMode = .pushToTalk
+            onWorkflowDictationStart?(workflowId)
+        }
+    }
+
+    private func handleWorkflowKeyUp(workflowId: UUID, behavior: WorkflowHotkeyBehavior) {
+        guard behavior == .startDictation else { return }
+        guard isActive, activeWorkflowId == workflowId else { return }
+
+        guard let downTime = keyDownTime else { return }
+        if Date().timeIntervalSince(downTime) < Self.toggleThreshold {
+            currentMode = .toggle
+        } else {
+            isActive = false
+            activeSlotType = nil
+            activeProfileId = nil
+            activeWorkflowId = nil
+            currentMode = nil
+            keyDownTime = nil
+            pushToTalkInterruptionSignaled = false
             onDictationStop?()
         }
     }
 
     // MARK: - Display Name
+
+    nonisolated static func menuShortcutDescriptor(for hotkey: UnifiedHotkey) -> MenuShortcutDescriptor? {
+        guard !hotkey.isDoubleTap,
+              hotkey.mouseButton == nil,
+              !hotkey.isFn,
+              hotkey.kind == .keyWithModifiers || hotkey.kind == .bareKey,
+              let keyEquivalent = menuKeyEquivalent(for: hotkey.keyCode) else {
+            return nil
+        }
+
+        let relevantModifiers = NSEvent.ModifierFlags(rawValue: hotkey.modifierFlags)
+            .intersection([.command, .option, .control, .shift, .function])
+
+        return MenuShortcutDescriptor(
+            keyEquivalent: keyEquivalent,
+            modifiers: relevantModifiers
+        )
+    }
 
     nonisolated static func displayName(for hotkey: UnifiedHotkey) -> String {
         if let button = hotkey.mouseButton {
@@ -979,6 +1304,14 @@ final class HotkeyService: ObservableObject {
             return hotkey.isDoubleTap ? "\(baseName) x2" : baseName
         }
         if hotkey.isFn { return hotkey.isDoubleTap ? "Fn x2" : "Fn" }
+
+        if hotkey.kind == .modifierCombo, !hotkey.modifierKeyCodes.isEmpty {
+            let baseName = displayName(
+                forModifierKeyCodes: hotkey.modifierKeyCodes,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: hotkey.modifierFlags)
+            )
+            return hotkey.isDoubleTap ? "\(baseName) x2" : baseName
+        }
 
         var parts: [String] = []
 
@@ -1040,6 +1373,50 @@ final class HotkeyService: ObservableObject {
         return "Key \(keyCode)"
     }
 
+    private nonisolated static func menuKeyEquivalent(for keyCode: UInt16) -> Character? {
+        let specialKeys: [UInt16: UInt32] = [
+            0x24: 0x000D,
+            0x30: 0x0009,
+            0x31: 0x0020,
+            0x33: 0x0008,
+            0x35: 0x001B,
+            0x60: UInt32(NSF5FunctionKey),
+            0x61: UInt32(NSF6FunctionKey),
+            0x62: UInt32(NSF7FunctionKey),
+            0x63: UInt32(NSF3FunctionKey),
+            0x64: UInt32(NSF8FunctionKey),
+            0x65: UInt32(NSF9FunctionKey),
+            0x67: UInt32(NSF11FunctionKey),
+            0x69: UInt32(NSF13FunctionKey),
+            0x6B: UInt32(NSF14FunctionKey),
+            0x6D: UInt32(NSF10FunctionKey),
+            0x6F: UInt32(NSF12FunctionKey),
+            0x71: UInt32(NSF15FunctionKey),
+            0x76: UInt32(NSF4FunctionKey),
+            0x78: UInt32(NSF2FunctionKey),
+            0x7A: UInt32(NSF1FunctionKey),
+            0x7B: UInt32(NSLeftArrowFunctionKey),
+            0x7C: UInt32(NSRightArrowFunctionKey),
+            0x7D: UInt32(NSDownArrowFunctionKey),
+            0x7E: UInt32(NSUpArrowFunctionKey),
+        ]
+        if let scalarValue = specialKeys[keyCode], let scalar = UnicodeScalar(scalarValue) {
+            return Character(scalar)
+        }
+
+        guard let character = characterForKeyCode(keyCode),
+              character.count == 1,
+              let scalar = character.unicodeScalars.first else {
+            return nil
+        }
+
+        if CharacterSet.letters.contains(scalar) {
+            return Character(character.lowercased())
+        }
+
+        return Character(String(scalar))
+    }
+
     /// Resolves the character for a keyCode using the current keyboard input source.
     private nonisolated static func characterForKeyCode(_ keyCode: UInt16) -> String? {
         let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
@@ -1086,13 +1463,66 @@ final class HotkeyService: ObservableObject {
 
     // MARK: - Helpers
 
-    private static func modifierFlagForKeyCode(_ keyCode: UInt16) -> NSEvent.ModifierFlags? {
+    nonisolated static func displayName(forModifierKeyCodes keyCodes: Set<UInt16>) -> String {
+        keyCodes
+            .sorted(by: modifierKeyCodeComesBefore)
+            .map(keyName(for:))
+            .joined(separator: " + ")
+    }
+
+    nonisolated static func displayName(
+        forModifierKeyCodes keyCodes: Set<UInt16>,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> String {
+        var parts: [String] = []
+        if modifierFlags.contains(.function) { parts.append("Fn") }
+        parts.append(contentsOf: keyCodes.sorted(by: modifierKeyCodeComesBefore).map(keyName(for:)))
+        return parts.joined(separator: " + ")
+    }
+
+    nonisolated static func modifierKeyCodes(from flags: NSEvent.ModifierFlags) -> Set<UInt16> {
+        let rawValue = flags.rawValue
+        return Set(deviceModifierKeyMasks.compactMap { entry in
+            rawValue & entry.mask == entry.mask ? entry.keyCode : nil
+        })
+    }
+
+    nonisolated static func modifierFlagForKeyCode(_ keyCode: UInt16) -> NSEvent.ModifierFlags? {
         switch keyCode {
         case 0x37, 0x36: return .command
         case 0x38, 0x3C: return .shift
         case 0x3A, 0x3D: return .option
         case 0x3B, 0x3E: return .control
         default: return nil
+        }
+    }
+
+    private nonisolated static let deviceModifierKeyMasks: [(mask: UInt, keyCode: UInt16)] = [
+        (0x00000008, 0x37), // Left Command
+        (0x00000010, 0x36), // Right Command
+        (0x00000002, 0x38), // Left Shift
+        (0x00000004, 0x3C), // Right Shift
+        (0x00000020, 0x3A), // Left Option
+        (0x00000040, 0x3D), // Right Option
+        (0x00000001, 0x3B), // Left Control
+        (0x00002000, 0x3E), // Right Control
+    ]
+
+    private nonisolated static func modifierKeyCodeComesBefore(_ lhs: UInt16, _ rhs: UInt16) -> Bool {
+        modifierKeyCodeSortIndex(lhs) < modifierKeyCodeSortIndex(rhs)
+    }
+
+    private nonisolated static func modifierKeyCodeSortIndex(_ keyCode: UInt16) -> Int {
+        switch keyCode {
+        case 0x37: return 0 // Left Command
+        case 0x36: return 1 // Right Command
+        case 0x3A: return 2 // Left Option
+        case 0x3D: return 3 // Right Option
+        case 0x3B: return 4 // Left Control
+        case 0x3E: return 5 // Right Control
+        case 0x38: return 6 // Left Shift
+        case 0x3C: return 7 // Right Shift
+        default: return Int(keyCode) + 100
         }
     }
 }

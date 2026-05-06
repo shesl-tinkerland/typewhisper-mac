@@ -9,46 +9,89 @@ final class APIHandlers: @unchecked Sendable {
     private let translationService: AnyObject? // TranslationService (macOS 15+)
     private let historyService: HistoryService
     private let profileService: ProfileService
+    private let dictionaryService: DictionaryService
     private let dictationViewModel: DictationViewModel
 
-    init(modelManager: ModelManagerService, audioFileService: AudioFileService, translationService: AnyObject?, historyService: HistoryService, profileService: ProfileService, dictationViewModel: DictationViewModel) {
+    init(
+        modelManager: ModelManagerService,
+        audioFileService: AudioFileService,
+        translationService: AnyObject?,
+        historyService: HistoryService,
+        profileService: ProfileService,
+        dictionaryService: DictionaryService,
+        dictationViewModel: DictationViewModel
+    ) {
         self.modelManager = modelManager
         self.audioFileService = audioFileService
         self.translationService = translationService
         self.historyService = historyService
         self.profileService = profileService
+        self.dictionaryService = dictionaryService
         self.dictationViewModel = dictationViewModel
     }
 
     func register(on router: APIRouter) {
         router.register("POST", "/v1/transcribe", handler: handleTranscribe)
+        router.register("POST", "/v1/transcribe/local-file", handler: handleTranscribeLocalFile)
         router.register("GET", "/v1/status", handler: handleStatus)
         router.register("GET", "/v1/models", handler: handleModels)
         router.register("GET", "/v1/history", handler: handleGetHistory)
         router.register("DELETE", "/v1/history", handler: handleDeleteHistory)
-        router.register("GET", "/v1/profiles", handler: handleGetProfiles)
-        router.register("PUT", "/v1/profiles/toggle", handler: handleToggleProfile)
+        router.register("GET", "/v1/rules", handler: handleGetRules)
+        router.register("PUT", "/v1/rules/toggle", handler: handleToggleRule)
+        router.register("GET", "/v1/profiles", handler: handleGetRules)
+        router.register("PUT", "/v1/profiles/toggle", handler: handleToggleRule)
         router.register("POST", "/v1/dictation/start", handler: handleStartDictation)
         router.register("POST", "/v1/dictation/stop", handler: handleStopDictation)
         router.register("GET", "/v1/dictation/status", handler: handleDictationStatus)
+        router.register("GET", "/v1/dictation/transcription", handler: handleDictationTranscription)
+        router.register("GET", "/v1/dictionary/terms", handler: handleGetDictionaryTerms)
+        router.register("PUT", "/v1/dictionary/terms", handler: handlePutDictionaryTerms)
+        router.register("DELETE", "/v1/dictionary/terms", handler: handleDeleteDictionaryTerms)
     }
 
     // MARK: - POST /v1/transcribe
 
-    private func handleTranscribe(_ request: HTTPRequest) async -> HTTPResponse {
-        // Note: Don't pre-check isModelReady here - let transcribe() handle auto-restore
-        // for models that were auto-unloaded but can be re-loaded.
-        let hasEngine = await modelManager.selectedProviderId != nil
-        guard hasEngine else {
-            return .error(status: 503, message: "No engine selected. Select an engine in TypeWhisper first.")
-        }
+    private struct TranscribeOptions {
+        var language: String? = nil
+        var languageHints: [String] = []
+        var task: TranscriptionTask = .transcribe
+        var targetLanguage: String? = nil
+        var responseFormat = "json"
+        var requestPrompt: String? = nil
+        var engineOverride: String? = nil
+        var modelOverride: String? = nil
+        var awaitDownload = false
+    }
 
+    private struct LocalFileTranscribeRequest: Decodable {
+        let path: String
+        let language: String?
+        let languageHints: [String]?
+        let task: String?
+        let targetLanguage: String?
+        let responseFormat: String?
+        let prompt: String?
+        let engine: String?
+        let model: String?
+
+        enum CodingKeys: String, CodingKey {
+            case path
+            case language
+            case languageHints = "language_hints"
+            case task
+            case targetLanguage = "target_language"
+            case responseFormat = "response_format"
+            case prompt
+            case engine
+            case model
+        }
+    }
+
+    private func handleTranscribe(_ request: HTTPRequest) async -> HTTPResponse {
         let audioData: Data
         var fileExtension = "wav"
-        var language: String?
-        var task: TranscriptionTask = .transcribe
-        var targetLanguage: String?
-        var responseFormat = "json"
+        var options = TranscribeOptions(awaitDownload: request.queryParams["await_download"] == "1")
 
         let contentType = request.headers["content-type"] ?? ""
 
@@ -71,36 +114,75 @@ final class APIHandlers: @unchecked Sendable {
             if let langPart = parts.first(where: { $0.name == "language" }),
                let val = String(data: langPart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                !val.isEmpty {
-                language = val
+                options.language = val
             }
+
+            options.languageHints = parts
+                .filter { $0.name == "language_hint" }
+                .compactMap { String(data: $0.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
 
             if let taskPart = parts.first(where: { $0.name == "task" }),
                let val = String(data: taskPart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                let parsed = TranscriptionTask(rawValue: val) {
-                task = parsed
+                options.task = parsed
             }
 
             if let targetPart = parts.first(where: { $0.name == "target_language" }),
                let val = String(data: targetPart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                !val.isEmpty {
-                targetLanguage = val
+                options.targetLanguage = val
             }
 
             if let formatPart = parts.first(where: { $0.name == "response_format" }),
                let val = String(data: formatPart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                !val.isEmpty {
-                responseFormat = val
+                options.responseFormat = val
+            }
+
+            if let promptPart = parts.first(where: { $0.name == "prompt" }),
+               let val = String(data: promptPart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !val.isEmpty {
+                options.requestPrompt = val
+            }
+
+            if let enginePart = parts.first(where: { $0.name == "engine" }),
+               let val = String(data: enginePart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !val.isEmpty {
+                options.engineOverride = val
+            }
+
+            if let modelPart = parts.first(where: { $0.name == "model" }),
+               let val = String(data: modelPart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !val.isEmpty {
+                options.modelOverride = val
             }
         } else if !request.body.isEmpty {
             audioData = request.body
             fileExtension = extensionFromMIME(contentType)
-            language = request.headers["x-language"]
+            options.language = request.headers["x-language"]
+            options.languageHints = request.headers["x-language-hints"]?
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty } ?? []
             if let taskStr = request.headers["x-task"], let parsed = TranscriptionTask(rawValue: taskStr) {
-                task = parsed
+                options.task = parsed
             }
-            targetLanguage = request.headers["x-target-language"]
+            options.targetLanguage = request.headers["x-target-language"]
             if let format = request.headers["x-response-format"], !format.isEmpty {
-                responseFormat = format
+                options.responseFormat = format
+            }
+            if let prompt = request.headers["x-prompt"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !prompt.isEmpty {
+                options.requestPrompt = prompt
+            }
+            if let engine = request.headers["x-engine"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !engine.isEmpty {
+                options.engineOverride = engine
+            }
+            if let model = request.headers["x-model"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !model.isEmpty {
+                options.modelOverride = model
             }
         } else {
             return .error(status: 400, message: "No audio data provided")
@@ -115,12 +197,110 @@ final class APIHandlers: @unchecked Sendable {
         do {
             try audioData.write(to: tempURL)
             defer { try? FileManager.default.removeItem(at: tempURL) }
-
             let samples = try await audioFileService.loadAudioSamples(from: tempURL)
-            let result = try await modelManager.transcribe(audioSamples: samples, language: language, task: task)
+            return await transcribeLoadedSamples(samples, options: options)
+        } catch {
+            return .error(status: 500, message: "Transcription failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleTranscribeLocalFile(_ request: HTTPRequest) async -> HTTPResponse {
+        guard !request.body.isEmpty else {
+            return .error(status: 400, message: "Missing JSON body")
+        }
+
+        let payload: LocalFileTranscribeRequest
+        do {
+            payload = try JSONDecoder().decode(LocalFileTranscribeRequest.self, from: request.body)
+        } catch {
+            return .error(status: 400, message: "Invalid JSON body")
+        }
+
+        let fileURL = URL(fileURLWithPath: payload.path)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return .error(status: 400, message: "File not found")
+        }
+
+        guard AudioFileService.supportedExtensions.contains(fileURL.pathExtension.lowercased()) else {
+            return .error(status: 400, message: "Unsupported audio format")
+        }
+
+        var options = TranscribeOptions(awaitDownload: request.queryParams["await_download"] == "1")
+        options.language = payload.language?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        options.languageHints = payload.languageHints?.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } ?? []
+        if let task = payload.task.flatMap(TranscriptionTask.init(rawValue:)) {
+            options.task = task
+        }
+        options.targetLanguage = payload.targetLanguage?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        if let responseFormat = payload.responseFormat?.trimmingCharacters(in: .whitespacesAndNewlines), !responseFormat.isEmpty {
+            options.responseFormat = responseFormat
+        }
+        options.requestPrompt = payload.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        options.engineOverride = payload.engine?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        options.modelOverride = payload.model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+
+        do {
+            let samples = try await audioFileService.loadAudioSamples(from: fileURL)
+            return await transcribeLoadedSamples(samples, options: options)
+        } catch {
+            return .error(status: 500, message: "Transcription failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func transcribeLoadedSamples(_ samples: [Float], options: TranscribeOptions) async -> HTTPResponse {
+        if options.language != nil, !options.languageHints.isEmpty {
+            return .error(status: 400, message: "Use either 'language' or 'language_hint', not both")
+        }
+
+        let resolvedOverride: ResolvedOverride
+        switch await resolveEngineModelOverride(
+            engine: options.engineOverride,
+            model: options.modelOverride,
+            awaitDownload: options.awaitDownload
+        ) {
+        case .use(let value):
+            resolvedOverride = value
+        case .reject(let response):
+            return response
+        }
+
+        if resolvedOverride.engineId == nil {
+            let hasEngine = await modelManager.selectedProviderId != nil
+            guard hasEngine else {
+                return .error(status: 503, message: "No engine selected. Select an engine in TypeWhisper first.")
+            }
+        }
+
+        do {
+            let effectiveProviderId: String?
+            if let engineId = resolvedOverride.engineId {
+                effectiveProviderId = engineId
+            } else {
+                effectiveProviderId = await modelManager.selectedProviderId
+            }
+            let dictionaryPrompt = await MainActor.run {
+                dictionaryService.getTermsForPrompt(providerId: effectiveProviderId)
+            }
+            let prompt = mergedPrompt(requestPrompt: options.requestPrompt, dictionaryPrompt: dictionaryPrompt)
+            let languageSelection: LanguageSelection
+            if !options.languageHints.isEmpty {
+                languageSelection = LanguageSelection.auto.withSelectedCodes(options.languageHints, nilBehavior: .auto)
+            } else if let language = options.language {
+                languageSelection = .exact(language)
+            } else {
+                languageSelection = .auto
+            }
+            let result = try await modelManager.transcribe(
+                audioSamples: samples,
+                languageSelection: languageSelection,
+                task: options.task,
+                engineOverrideId: resolvedOverride.engineId,
+                cloudModelOverride: resolvedOverride.modelId,
+                prompt: prompt
+            )
 
             var finalText = result.text
-            if let targetCode = targetLanguage {
+            if let targetCode = options.targetLanguage {
                 #if canImport(Translation)
                 if #available(macOS 15, *), let ts = translationService as? TranslationService {
                     if let targetNormalized = TranslationService.normalizedLanguageIdentifier(from: targetCode) {
@@ -156,13 +336,35 @@ final class APIHandlers: @unchecked Sendable {
                 #endif
             }
 
-            let modelId = await modelManager.selectedModelId
+            let modelId = await resolveResponseModelId(
+                override: resolvedOverride,
+                engineUsed: result.engineUsed
+            )
 
-            if responseFormat == "verbose_json" {
+            if options.responseFormat == "verbose_json" {
                 struct SegmentEntry: Encodable {
                     let start: Double
                     let end: Double
                     let text: String
+                    let speaker: String?
+                    let speakerConfidence: Double?
+
+                    enum CodingKeys: String, CodingKey {
+                        case start
+                        case end
+                        case text
+                        case speaker
+                        case speakerConfidence = "speaker_confidence"
+                    }
+
+                    func encode(to encoder: Encoder) throws {
+                        var container = encoder.container(keyedBy: CodingKeys.self)
+                        try container.encode(start, forKey: .start)
+                        try container.encode(end, forKey: .end)
+                        try container.encode(text, forKey: .text)
+                        try container.encodeIfPresent(speaker, forKey: .speaker)
+                        try container.encodeIfPresent(speakerConfidence, forKey: .speakerConfidence)
+                    }
                 }
 
                 struct VerboseResponse: Encodable {
@@ -176,7 +378,13 @@ final class APIHandlers: @unchecked Sendable {
                 }
 
                 let segments = result.segments.map {
-                    SegmentEntry(start: $0.start, end: $0.end, text: $0.text)
+                    SegmentEntry(
+                        start: $0.start,
+                        end: $0.end,
+                        text: $0.text,
+                        speaker: $0.speakerLabel,
+                        speakerConfidence: $0.speakerConfidence
+                    )
                 }
 
                 return .json(VerboseResponse(
@@ -212,10 +420,117 @@ final class APIHandlers: @unchecked Sendable {
         }
     }
 
+    // MARK: - Engine/Model Override Resolution
+
+    private struct ResolvedOverride {
+        let engineId: String?
+        let modelId: String?
+    }
+
+    private enum OverrideResolution {
+        case use(ResolvedOverride)
+        case reject(HTTPResponse)
+    }
+
+    /// Resolve per-request `engine` / `model` overrides against the full set of loaded
+    /// transcription plugins. Implements the matrix from issue #317:
+    ///
+    /// - both nil -> use GUI selection
+    /// - engine only -> use that engine's default model
+    /// - model only -> infer engine by scanning the model catalog across all engines
+    /// - both set   -> use as-is
+    ///
+    /// Also enforces configuration: an unconfigured engine returns 409 by default (to
+    /// distinguish "typo" from "needs setup") unless the caller passed `?await_download=1`,
+    /// in which case the usual `triggerRestoreModel` retry path is allowed to run.
+    @MainActor
+    private func resolveEngineModelOverride(
+        engine: String?,
+        model: String?,
+        awaitDownload: Bool
+    ) -> OverrideResolution {
+        if engine == nil, model == nil {
+            return .use(ResolvedOverride(engineId: nil, modelId: nil))
+        }
+
+        let engines = PluginManager.shared.transcriptionEngines
+
+        let resolvedEngineId: String?
+        if let engine {
+            guard let match = engines.first(where: { $0.providerId == engine }) else {
+                return .reject(.error(status: 400, message: "Unknown engine '\(engine)'"))
+            }
+            resolvedEngineId = match.providerId
+        } else if let model {
+            let matches = engines.filter { engine in
+                engine.modelCatalog.contains(where: { $0.id == model })
+            }
+            if matches.isEmpty {
+                return .reject(.error(status: 400, message: "Unknown model '\(model)'"))
+            }
+            if matches.count > 1 {
+                let engineIds = matches.map { $0.providerId }.joined(separator: ", ")
+                return .reject(.error(
+                    status: 400,
+                    message: "Ambiguous model id '\(model)' -- matches engines: \(engineIds). Specify 'engine' too."
+                ))
+            }
+            resolvedEngineId = matches[0].providerId
+        } else {
+            resolvedEngineId = nil
+        }
+
+        if let engineId = resolvedEngineId,
+           let model,
+           let plugin = engines.first(where: { $0.providerId == engineId }) {
+            let ids = Set(plugin.modelCatalog.map { $0.id })
+            if !ids.isEmpty, !ids.contains(model) {
+                return .reject(.error(
+                    status: 400,
+                    message: "Model '\(model)' is not offered by engine '\(engineId)'"
+                ))
+            }
+        }
+
+        if let engineId = resolvedEngineId,
+           let plugin = engines.first(where: { $0.providerId == engineId }),
+           !plugin.isConfigured,
+           !awaitDownload {
+            return .reject(.error(
+                status: 409,
+                message: "Engine '\(engineId)' is not configured (missing API key or downloaded weights). Pass ?await_download=1 to wait for restore."
+            ))
+        }
+
+        return .use(ResolvedOverride(engineId: resolvedEngineId, modelId: model))
+    }
+
+    @MainActor
+    private func resolveResponseModelId(override: ResolvedOverride, engineUsed: String) -> String? {
+        if let modelId = override.modelId { return modelId }
+        if let engineId = override.engineId,
+           let plugin = PluginManager.shared.transcriptionEngine(for: engineId) {
+            return plugin.selectedModelId
+        }
+        if let plugin = PluginManager.shared.transcriptionEngine(for: engineUsed) {
+            return plugin.selectedModelId
+        }
+        return nil
+    }
+
+    private func mergedPrompt(requestPrompt: String?, dictionaryPrompt: String?) -> String? {
+        let components = [requestPrompt, dictionaryPrompt]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !components.isEmpty else { return nil }
+        return components.joined(separator: "\n")
+    }
+
     // MARK: - GET /v1/status
 
     private func handleStatus(_ request: HTTPRequest) async -> HTTPResponse {
         let providerId = await modelManager.selectedProviderId
+        let modelId = await modelManager.selectedModelId
         let isReady = await modelManager.isModelReady
         let supportsStreaming = await modelManager.supportsStreaming
         let supportsTranslation = await modelManager.supportsTranslation
@@ -223,6 +538,7 @@ final class APIHandlers: @unchecked Sendable {
         struct StatusResponse: Encodable {
             let status: String
             let engine: String?
+            let model: String?
             let supports_streaming: Bool
             let supports_translation: Bool
         }
@@ -230,6 +546,7 @@ final class APIHandlers: @unchecked Sendable {
         let response = StatusResponse(
             status: isReady ? "ready" : "no_model",
             engine: providerId,
+            model: modelId,
             supports_streaming: supportsStreaming,
             supports_translation: supportsTranslation
         )
@@ -248,6 +565,8 @@ final class APIHandlers: @unchecked Sendable {
             let language_count: Int
             let status: String
             let selected: Bool
+            let downloaded: Bool?
+            let loaded: Bool?
         }
 
         let selectedProviderId = modelManager.selectedProviderId
@@ -255,7 +574,7 @@ final class APIHandlers: @unchecked Sendable {
 
         for engine in PluginManager.shared.transcriptionEngines {
             let isSelected = engine.providerId == selectedProviderId
-            for model in engine.transcriptionModels {
+            for model in engine.modelCatalog {
                 models.append(ModelEntry(
                     id: model.id,
                     engine: engine.providerId,
@@ -263,7 +582,9 @@ final class APIHandlers: @unchecked Sendable {
                     size_description: model.sizeDescription,
                     language_count: model.languageCount,
                     status: engine.isConfigured ? "ready" : "not_configured",
-                    selected: isSelected && engine.selectedModelId == model.id
+                    selected: isSelected && engine.selectedModelId == model.id,
+                    downloaded: model.downloaded,
+                    loaded: model.loaded
                 ))
             }
         }
@@ -355,12 +676,67 @@ final class APIHandlers: @unchecked Sendable {
         }
     }
 
-    // MARK: - GET /v1/profiles
+    // MARK: - /v1/dictionary/terms
 
-    private func handleGetProfiles(_ request: HTTPRequest) async -> HTTPResponse {
+    private func handleGetDictionaryTerms(_ request: HTTPRequest) async -> HTTPResponse {
+        struct DictionaryTermsResponse: Encodable {
+            let terms: [String]
+            let count: Int
+        }
+
+        return await MainActor.run {
+            let terms = dictionaryService.enabledTerms()
+            return .json(DictionaryTermsResponse(terms: terms, count: terms.count))
+        }
+    }
+
+    private func handlePutDictionaryTerms(_ request: HTTPRequest) async -> HTTPResponse {
+        struct DictionaryTermsRequest: Decodable {
+            let terms: [String]
+            let replace: Bool?
+        }
+
+        guard !request.body.isEmpty else {
+            return .error(status: 400, message: "Missing JSON body")
+        }
+
+        let payload: DictionaryTermsRequest
+        do {
+            payload = try JSONDecoder().decode(DictionaryTermsRequest.self, from: request.body)
+        } catch {
+            return .error(status: 400, message: "Invalid JSON body")
+        }
+
+        struct DictionaryTermsResponse: Encodable {
+            let terms: [String]
+            let count: Int
+        }
+
+        return await MainActor.run {
+            dictionaryService.setTerms(payload.terms, replaceExisting: payload.replace ?? false)
+            let terms = dictionaryService.enabledTerms()
+            return .json(DictionaryTermsResponse(terms: terms, count: terms.count))
+        }
+    }
+
+    private func handleDeleteDictionaryTerms(_ request: HTTPRequest) async -> HTTPResponse {
+        struct DeleteResponse: Encodable {
+            let deleted: Bool
+            let count: Int
+        }
+
+        return await MainActor.run {
+            dictionaryService.removeAllTerms()
+            return .json(DeleteResponse(deleted: true, count: 0))
+        }
+    }
+
+    // MARK: - GET /v1/rules
+
+    private func handleGetRules(_ request: HTTPRequest) async -> HTTPResponse {
         let profileService = self.profileService
         return await MainActor.run {
-            struct ProfileEntry: Encodable {
+            struct RuleEntry: Encodable {
                 let id: String
                 let name: String
                 let is_enabled: Bool
@@ -368,33 +744,49 @@ final class APIHandlers: @unchecked Sendable {
                 let bundle_identifiers: [String]
                 let url_patterns: [String]
                 let input_language: String?
+                let language_mode: String
+                let language_hints: [String]
                 let translation_target_language: String?
             }
 
-            struct ProfilesResponse: Encodable {
-                let profiles: [ProfileEntry]
+            struct RulesResponse: Encodable {
+                let rules: [RuleEntry]
+                let profiles: [RuleEntry]
             }
 
             let entries = profileService.profiles.map { profile in
-                ProfileEntry(
+                let selection = profile.inputLanguageSelection
+                let legacyInputLanguage: String?
+                switch selection {
+                case .auto:
+                    legacyInputLanguage = "auto"
+                case .exact(let code):
+                    legacyInputLanguage = code
+                case .inheritGlobal, .hints:
+                    legacyInputLanguage = nil
+                }
+
+                return RuleEntry(
                     id: profile.id.uuidString,
                     name: profile.name,
                     is_enabled: profile.isEnabled,
                     priority: profile.priority,
                     bundle_identifiers: profile.bundleIdentifiers,
                     url_patterns: profile.urlPatterns,
-                    input_language: profile.inputLanguage,
+                    input_language: legacyInputLanguage,
+                    language_mode: selection.mode.rawValue,
+                    language_hints: selection.selectedCodes,
                     translation_target_language: profile.translationTargetLanguage
                 )
             }
 
-            return .json(ProfilesResponse(profiles: entries))
+            return .json(RulesResponse(rules: entries, profiles: entries))
         }
     }
 
-    // MARK: - PUT /v1/profiles/toggle
+    // MARK: - PUT /v1/rules/toggle
 
-    private func handleToggleProfile(_ request: HTTPRequest) async -> HTTPResponse {
+    private func handleToggleRule(_ request: HTTPRequest) async -> HTTPResponse {
         guard let idString = request.queryParams["id"],
               let uuid = UUID(uuidString: idString) else {
             return .error(status: 400, message: "Missing or invalid 'id' query parameter")
@@ -403,7 +795,7 @@ final class APIHandlers: @unchecked Sendable {
         let profileService = self.profileService
         return await MainActor.run {
             guard let profile = profileService.profiles.first(where: { $0.id == uuid }) else {
-                return .error(status: 404, message: "Profile not found")
+                return .error(status: 404, message: "Rule not found")
             }
 
             profileService.toggleProfile(profile)
@@ -411,12 +803,16 @@ final class APIHandlers: @unchecked Sendable {
             struct ToggleResponse: Encodable {
                 let id: String
                 let name: String
+                let rule_name: String
+                let profile_name: String
                 let is_enabled: Bool
             }
 
             return .json(ToggleResponse(
                 id: profile.id.uuidString,
                 name: profile.name,
+                rule_name: profile.name,
+                profile_name: profile.name,
                 is_enabled: profile.isEnabled
             ))
         }
@@ -430,10 +826,17 @@ final class APIHandlers: @unchecked Sendable {
             guard !dictationViewModel.isRecording else {
                 return .error(status: 409, message: "Already recording")
             }
-            dictationViewModel.apiStartRecording()
 
-            struct StartResponse: Encodable { let status: String }
-            return .json(StartResponse(status: "recording"))
+            let id = dictationViewModel.apiStartRecording()
+            if let session = dictationViewModel.apiDictationSession(id: id), session.status == .failed {
+                return .error(status: 409, message: session.error ?? "Failed to start dictation")
+            }
+
+            struct StartResponse: Encodable {
+                let id: String
+                let status: String
+            }
+            return .json(StartResponse(id: id.uuidString, status: "recording"))
         }
     }
 
@@ -445,10 +848,15 @@ final class APIHandlers: @unchecked Sendable {
             guard dictationViewModel.isRecording else {
                 return .error(status: 409, message: "Not recording")
             }
-            dictationViewModel.apiStopRecording()
+            guard let id = dictationViewModel.apiStopRecording() else {
+                return .error(status: 500, message: "Missing active dictation session")
+            }
 
-            struct StopResponse: Encodable { let status: String }
-            return .json(StopResponse(status: "stopped"))
+            struct StopResponse: Encodable {
+                let id: String
+                let status: String
+            }
+            return .json(StopResponse(id: id.uuidString, status: "stopped"))
         }
     }
 
@@ -459,6 +867,66 @@ final class APIHandlers: @unchecked Sendable {
         return await MainActor.run {
             struct DictationStatusResponse: Encodable { let is_recording: Bool }
             return .json(DictationStatusResponse(is_recording: dictationViewModel.isRecording))
+        }
+    }
+
+    // MARK: - GET /v1/dictation/transcription
+
+    private func handleDictationTranscription(_ request: HTTPRequest) async -> HTTPResponse {
+        guard let idString = request.queryParams["id"],
+              let uuid = UUID(uuidString: idString) else {
+            return .error(status: 400, message: "Missing or invalid 'id' query parameter")
+        }
+
+        let dictationViewModel = self.dictationViewModel
+        return await MainActor.run {
+            guard let session = dictationViewModel.apiDictationSession(id: uuid) else {
+                return .error(status: 404, message: "Dictation session not found")
+            }
+
+            struct DictationTranscriptionPayload: Encodable {
+                let text: String
+                let raw_text: String
+                let timestamp: Date
+                let app_name: String?
+                let app_bundle_id: String?
+                let app_url: String?
+                let duration: Double
+                let language: String?
+                let engine: String
+                let model: String?
+                let words_count: Int
+            }
+
+            struct DictationTranscriptionResponse: Encodable {
+                let id: String
+                let status: String
+                let transcription: DictationTranscriptionPayload?
+                let error: String?
+            }
+
+            let transcription = session.transcription.map {
+                DictationTranscriptionPayload(
+                    text: $0.text,
+                    raw_text: $0.rawText,
+                    timestamp: $0.timestamp,
+                    app_name: $0.appName,
+                    app_bundle_id: $0.appBundleIdentifier,
+                    app_url: $0.appURL,
+                    duration: $0.duration,
+                    language: $0.language,
+                    engine: $0.engine,
+                    model: $0.model,
+                    words_count: $0.wordsCount
+                )
+            }
+
+            return .json(DictationTranscriptionResponse(
+                id: session.id.uuidString,
+                status: session.status.rawValue,
+                transcription: transcription,
+                error: session.error
+            ))
         }
     }
 
@@ -487,5 +955,11 @@ final class APIHandlers: @unchecked Sendable {
         if lower.contains("ogg") { return "ogg" }
         if lower.contains("aac") { return "aac" }
         return "wav"
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

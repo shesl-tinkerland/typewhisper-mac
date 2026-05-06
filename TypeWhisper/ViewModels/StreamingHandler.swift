@@ -1,96 +1,275 @@
 import Foundation
 import os
-import TypeWhisperPluginSDK
 
 private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "typewhisper-mac", category: "StreamingHandler")
 
-@MainActor
-final class StreamingHandler {
+final class StreamingHandler: @unchecked Sendable {
+    private struct SharedState {
+        var confirmedStreamingText = ""
+        var liveSessionHandle: ModelManagerService.LiveTranscriptionSessionHandle?
+        var sampleCursor = 0
+    }
+
+    private static let liveSessionPollInterval: Duration = .milliseconds(350)
+    private static let fallbackPollInterval: Duration = .seconds(3)
+    private static let fallbackPreviewWindowDuration: TimeInterval = 10
+
     private var streamingTask: Task<Void, Never>?
-    private var confirmedStreamingText = ""
+    private let progressText = OSAllocatedUnfairLock(initialState: "")
+    private let sharedState = OSAllocatedUnfairLock(initialState: SharedState())
 
     private let modelManager: ModelManagerService
-    private let audioRecordingService: AudioRecordingService
-    private let dictionaryService: DictionaryService
+    private let bufferProvider: () -> [Float]
+    private let recentBufferProvider: (TimeInterval) -> [Float]
+    private let bufferDeltaProvider: (Int) -> (samples: [Float], nextOffset: Int)
+    private let bufferedDurationProvider: () -> Double
 
     var onPartialTextUpdate: ((String) -> Void)?
     var onStreamingStateChange: ((Bool) -> Void)?
 
     init(
         modelManager: ModelManagerService,
-        audioRecordingService: AudioRecordingService,
-        dictionaryService: DictionaryService
+        bufferProvider: @escaping () -> [Float],
+        recentBufferProvider: @escaping (TimeInterval) -> [Float],
+        bufferDeltaProvider: @escaping (Int) -> (samples: [Float], nextOffset: Int),
+        bufferedDurationProvider: @escaping () -> Double
     ) {
         self.modelManager = modelManager
-        self.audioRecordingService = audioRecordingService
-        self.dictionaryService = dictionaryService
+        self.bufferProvider = bufferProvider
+        self.recentBufferProvider = recentBufferProvider
+        self.bufferDeltaProvider = bufferDeltaProvider
+        self.bufferedDurationProvider = bufferedDurationProvider
     }
 
+    @MainActor
     func start(
+        streamPrompt: String,
         engineOverrideId: String?,
         selectedProviderId: String?,
-        language: String?,
+        languageSelection: LanguageSelection,
         task: TranscriptionTask,
         cloudModelOverride: String?,
-        stateCheck: @MainActor @escaping () -> DictationViewModel.State
+        allowLiveTranscription: Bool,
+        stateCheck: @escaping @MainActor @Sendable () -> Bool
     ) {
+        stop()
+
+        guard allowLiveTranscription else {
+            logger.info("Live transcript preview skipped: disabled")
+            return
+        }
+
         let providerId = engineOverrideId ?? selectedProviderId
         guard let providerId,
-              let plugin = PluginManager.shared.transcriptionEngine(for: providerId) else { return }
+              PluginManager.shared.transcriptionEngine(for: providerId) != nil else {
+            logger.info("Live transcript preview skipped: provider unavailable")
+            return
+        }
 
-        let pollInterval: Double = plugin.supportsStreaming ? 1.5 : 3.0
-
+        resetStreamingState()
         onStreamingStateChange?(true)
-        confirmedStreamingText = ""
-        let streamPrompt = dictionaryService.getTermsForPrompt()
+
         streamingTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: .seconds(pollInterval))
 
-            while !Task.isCancelled, stateCheck() == .recording {
-                let buffer = self.audioRecordingService.getRecentBuffer(maxDuration: 3600)
-                let bufferDuration = Double(buffer.count) / 16000.0
-
-                if bufferDuration > 0.5 {
-                    do {
-                        let confirmed = self.confirmedStreamingText
-                        let result = try await self.modelManager.transcribe(
-                            audioSamples: buffer,
-                            language: language,
-                            task: task,
-                            engineOverrideId: engineOverrideId,
-                            cloudModelOverride: cloudModelOverride,
-                            prompt: streamPrompt,
-                            onProgress: { [weak self] text in
-                                guard let self, !Task.isCancelled else { return false }
-                                let stable = Self.stabilizeText(confirmed: confirmed, new: text)
-                                Task { @MainActor [weak self] in
-                                    self?.onPartialTextUpdate?(stable)
-                                }
-                                return true
-                            }
-                        )
-                        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !text.isEmpty {
-                            let stable = Self.stabilizeText(confirmed: confirmed, new: text)
-                            self.onPartialTextUpdate?(stable)
-                            self.confirmedStreamingText = stable
-                        }
-                    } catch {
-                        logger.warning("Streaming preview error: \(error.localizedDescription)")
+            if let handle = try? await self.modelManager.createLiveTranscriptionSession(
+                languageSelection: languageSelection,
+                task: task,
+                engineOverrideId: engineOverrideId,
+                cloudModelOverride: cloudModelOverride,
+                prompt: streamPrompt,
+                onProgress: { [weak self] text in
+                    guard let self else { return false }
+                    let confirmed = self.progressText.withLock { $0 }
+                    let stable = Self.stabilizeText(confirmed: confirmed, new: text)
+                    self.progressText.withLock { $0 = stable }
+                    self.sharedState.withLock { $0.confirmedStreamingText = stable }
+                    Task { @MainActor [weak self] in
+                        self?.onPartialTextUpdate?(stable)
                     }
+                    return true
                 }
-
-                try? await Task.sleep(for: .seconds(pollInterval))
+            ) {
+                logger.info("Live transcript preview using live session providerId=\(handle.providerId, privacy: .public)")
+                self.sharedState.withLock { $0.liveSessionHandle = handle }
+                await self.runLiveSessionLoop(stateCheck: stateCheck)
+                return
             }
+
+            guard self.modelManager.allowsTranscriptPreviewFallback(
+                engineOverrideId: engineOverrideId,
+                selectedProviderId: selectedProviderId
+            ) else {
+                logger.info("Live transcript preview fallback skipped providerId=\(providerId, privacy: .public) reason=policy-opt-out")
+                await MainActor.run { [weak self] in
+                    self?.clearStreamingState(notifyStreamingStopped: true)
+                }
+                return
+            }
+
+            logger.info("Live transcript preview using fallback batch providerId=\(providerId, privacy: .public)")
+            await self.runFallbackLoop(
+                streamPrompt: streamPrompt,
+                engineOverrideId: engineOverrideId,
+                languageSelection: languageSelection,
+                task: task,
+                cloudModelOverride: cloudModelOverride,
+                stateCheck: stateCheck
+            )
         }
     }
 
+    @MainActor
+    func finish() async -> TranscriptionResult? {
+        streamingTask?.cancel()
+        streamingTask = nil
+
+        guard let handle = sharedState.withLock({ $0.liveSessionHandle }) else {
+            clearStreamingState(notifyStreamingStopped: true)
+            return nil
+        }
+
+        let delta = nextBufferDelta()
+
+        do {
+            if !delta.samples.isEmpty {
+                try await handle.session.appendAudio(samples: delta.samples)
+            }
+            let result = try await modelManager.finishLiveTranscriptionSession(
+                handle,
+                bufferedDuration: bufferedDurationProvider()
+            )
+            clearStreamingState(notifyStreamingStopped: true)
+
+            let finalText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            progressText.withLock { $0 = finalText }
+            sharedState.withLock { $0.confirmedStreamingText = finalText }
+            return result
+        } catch {
+            logger.warning("Finalizing live transcription failed: \(error.localizedDescription)")
+            await handle.session.cancel()
+            clearStreamingState(notifyStreamingStopped: true)
+            return nil
+        }
+    }
+
+    @MainActor
     func stop() {
         streamingTask?.cancel()
         streamingTask = nil
-        onStreamingStateChange?(false)
-        confirmedStreamingText = ""
+
+        let handle = sharedState.withLock { state in
+            let handle = state.liveSessionHandle
+            state.liveSessionHandle = nil
+            return handle
+        }
+        if let handle {
+            Task {
+                await handle.session.cancel()
+            }
+        }
+
+        clearStreamingState(notifyStreamingStopped: true)
+    }
+
+    private func runLiveSessionLoop(stateCheck: @escaping @MainActor @Sendable () -> Bool) async {
+        while !Task.isCancelled {
+            guard await stateCheck() else { break }
+            let delta = nextBufferDelta()
+
+            if !delta.samples.isEmpty,
+               let handle = sharedState.withLock({ $0.liveSessionHandle }) {
+                do {
+                    try await handle.session.appendAudio(samples: delta.samples)
+                } catch {
+                    logger.warning("Live transcription append failed: \(error.localizedDescription)")
+                    break
+                }
+            }
+
+            try? await Task.sleep(for: Self.liveSessionPollInterval)
+        }
+    }
+
+    private func runFallbackLoop(
+        streamPrompt: String,
+        engineOverrideId: String?,
+        languageSelection: LanguageSelection,
+        task: TranscriptionTask,
+        cloudModelOverride: String?,
+        stateCheck: @escaping @MainActor @Sendable () -> Bool
+    ) async {
+        try? await Task.sleep(for: Self.fallbackPollInterval)
+
+        while !Task.isCancelled {
+            guard await stateCheck() else { break }
+            let buffer = recentBufferProvider(Self.fallbackPreviewWindowDuration)
+            let bufferDuration = Double(buffer.count) / 16000.0
+
+            if bufferDuration > 0.5 {
+                do {
+                    let result = try await modelManager.transcribe(
+                        audioSamples: buffer,
+                        languageSelection: languageSelection,
+                        task: task,
+                        engineOverrideId: engineOverrideId,
+                        cloudModelOverride: cloudModelOverride,
+                        prompt: streamPrompt,
+                        onProgress: { [weak self] text in
+                            guard let self, !Task.isCancelled else { return false }
+                            let confirmed = self.progressText.withLock { $0 }
+                            let stable = Self.stabilizeText(confirmed: confirmed, new: text)
+                            Task { @MainActor [weak self] in
+                                self?.onPartialTextUpdate?(stable)
+                            }
+                            return true
+                        }
+                    )
+                    let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        let confirmed = confirmedStreamingText()
+                        let stable = Self.stabilizeText(confirmed: confirmed, new: text)
+                        progressText.withLock { $0 = stable }
+                        sharedState.withLock { $0.confirmedStreamingText = stable }
+                        await MainActor.run { [weak self] in
+                            self?.onPartialTextUpdate?(stable)
+                        }
+                    }
+                } catch {
+                    logger.warning("Streaming preview error: \(error.localizedDescription)")
+                }
+            }
+
+            try? await Task.sleep(for: Self.fallbackPollInterval)
+        }
+    }
+
+    private func nextBufferDelta() -> (samples: [Float], nextOffset: Int) {
+        let sampleCursor = sharedState.withLock { $0.sampleCursor }
+        let delta = bufferDeltaProvider(sampleCursor)
+        sharedState.withLock { $0.sampleCursor = delta.nextOffset }
+        return delta
+    }
+
+    private func resetStreamingState() {
+        sharedState.withLock { state in
+            state.confirmedStreamingText = ""
+            state.liveSessionHandle = nil
+            state.sampleCursor = 0
+        }
+        progressText.withLock { $0 = "" }
+    }
+
+    @MainActor
+    private func clearStreamingState(notifyStreamingStopped: Bool) {
+        resetStreamingState()
+        if notifyStreamingStopped {
+            onStreamingStateChange?(false)
+        }
+    }
+
+    private func confirmedStreamingText() -> String {
+        sharedState.withLock { $0.confirmedStreamingText }
     }
 
     /// Keeps confirmed text stable and only appends new content.
@@ -99,10 +278,8 @@ final class StreamingHandler {
         guard !confirmed.isEmpty else { return new }
         guard !new.isEmpty else { return confirmed }
 
-        // Best case: new text starts with confirmed text
         if new.hasPrefix(confirmed) { return new }
 
-        // Find how far the texts match from the start
         let confirmedChars = Array(confirmed.unicodeScalars)
         let newChars = Array(new.unicodeScalars)
         var matchEnd = 0
@@ -114,14 +291,11 @@ final class StreamingHandler {
             }
         }
 
-        // If more than half matches, keep confirmed and append the new tail
         if matchEnd > confirmed.count / 2 {
             let newContent = String(new.unicodeScalars.dropFirst(matchEnd))
             return confirmed + newContent
         }
 
-        // Suffix-prefix overlap: new text starts with a suffix of confirmed
-        // (happens when the streaming window has shifted forward)
         let minOverlap = min(20, confirmedChars.count / 4)
         let maxShift = min(confirmedChars.count - minOverlap, 150)
         if maxShift > 0 {
@@ -134,7 +308,6 @@ final class StreamingHandler {
             }
         }
 
-        // Very different result - accept the new text to avoid freezing the preview
         return new
     }
 }

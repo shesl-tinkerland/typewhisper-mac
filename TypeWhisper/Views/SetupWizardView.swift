@@ -230,8 +230,14 @@ struct SetupWizardView: View {
                     Text(String(localized: "System Default")).tag(nil as String?)
                     Divider()
                     ForEach(audioDevice.inputDevices) { device in
-                        Text(device.name).tag(device.uid as String?)
+                        Text(audioDevice.displayName(for: device)).tag(device.uid as String?)
                     }
+                }
+
+                if let message = audioDevice.selectedDeviceStatusMessage {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 if audioDevice.isPreviewActive {
@@ -268,6 +274,12 @@ struct SetupWizardView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+
+                if let error = audioDevice.previewError {
+                    Label(error.localizedDescription, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
         }
     }
@@ -389,7 +401,7 @@ struct SetupWizardView: View {
                         .foregroundStyle(.red)
                     Spacer()
                     Button(String(localized: "Retry")) {
-                        Task { await registryService.fetchRegistry() }
+                        Task { await registryService.fetchRegistry(force: true) }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -692,7 +704,7 @@ struct SetupWizardView: View {
                         .foregroundStyle(.red)
                     Spacer()
                     Button(String(localized: "Retry")) {
-                        Task { await registryService.fetchRegistry() }
+                        Task { await registryService.fetchRegistry(force: true) }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -1078,6 +1090,9 @@ struct SetupWizardView: View {
         case .pushToTalk: return dictation.pttHotkeyLabel
         case .toggle: return dictation.toggleHotkeyLabel
         case .promptPalette: return dictation.promptPaletteHotkeyLabel
+        case .recentTranscriptions: return dictation.recentTranscriptionsHotkeyLabel
+        case .copyLastTranscription: return dictation.copyLastTranscriptionHotkeyLabel
+        case .recorderToggle: return dictation.recorderToggleHotkeyLabel
         }
     }
 
@@ -1086,7 +1101,10 @@ struct SetupWizardView: View {
         case .hybrid: return String(localized: "Hybrid")
         case .pushToTalk: return String(localized: "Push-to-Talk")
         case .toggle: return String(localized: "Toggle")
-        case .promptPalette: return String(localized: "Prompt Palette")
+        case .promptPalette: return localizedAppText("Workflow Palette", de: "Workflow-Palette")
+        case .recentTranscriptions: return String(localized: "Recent Transcriptions")
+        case .copyLastTranscription: return String(localized: "Copy Last Transcription")
+        case .recorderToggle: return String(localized: "settings.tab.recorder")
         }
     }
 }
@@ -1099,7 +1117,13 @@ private struct RecommendationSettingsButton: View {
     var body: some View {
         Button {
             if let loaded = PluginManager.shared.loadedPlugins.first(where: { $0.manifest.id == manifestId }) {
-                PluginSettingsWindowManager.shared.present(loaded)
+                if !loaded.isEnabled {
+                    PluginManager.shared.setPluginEnabled(manifestId, enabled: true)
+                }
+                if let activePlugin = PluginManager.shared.loadedPlugins.first(where: { $0.manifest.id == manifestId }),
+                   activePlugin.supportsSettingsWindow {
+                    PluginSettingsWindowManager.shared.present(activePlugin)
+                }
             }
         } label: {
             HStack(spacing: 4) {

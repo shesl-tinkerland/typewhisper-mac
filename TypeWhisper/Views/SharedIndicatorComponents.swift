@@ -25,8 +25,8 @@ struct IndicatorSizing {
         profileFontSize: 9,
         profilePaddingH: 5,
         profilePaddingV: 2,
-        textFontSize: 12,
-        textExpandedHeight: 80
+        textFontSize: IndicatorStyle.notch.transcriptPreviewBaseFontSize,
+        textExpandedHeight: IndicatorStyle.notch.transcriptPreviewBaseExpandedHeight
     )
 
     static let overlay = IndicatorSizing(
@@ -39,8 +39,8 @@ struct IndicatorSizing {
         profileFontSize: 11,
         profilePaddingH: 6,
         profilePaddingV: 3,
-        textFontSize: 13,
-        textExpandedHeight: 100
+        textFontSize: IndicatorStyle.overlay.transcriptPreviewBaseFontSize,
+        textExpandedHeight: IndicatorStyle.overlay.transcriptPreviewBaseExpandedHeight
     )
 
     static let minimal = IndicatorSizing(
@@ -165,6 +165,8 @@ struct IndicatorRecordingContent: View {
             Text(formatDuration(viewModel.recordingDuration))
                 .font(.system(size: sizing.timerFontSize, weight: .medium).monospacedDigit())
                 .foregroundStyle(.white.opacity(sizing.timerOpacity))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .accessibilityLabel(String(localized: "Recording timer"))
                 .accessibilityValue(formatDuration(viewModel.recordingDuration))
         case .waveform:
@@ -174,16 +176,17 @@ struct IndicatorRecordingContent: View {
                 compact: true
             )
         case .profile:
-            if let name = viewModel.activeProfileName {
+            if let name = viewModel.activeRuleName {
                 Text(name)
                     .font(.system(size: sizing.profileFontSize, weight: .medium))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                    .fixedSize()
+                    .truncationMode(.tail)
                     .padding(.horizontal, sizing.profilePaddingH)
                     .padding(.vertical, sizing.profilePaddingV)
+                    .frame(maxWidth: NotchIndicatorLayout.profileChipMaxWidth, alignment: .leading)
                     .background(.white.opacity(0.2), in: Capsule())
-                    .accessibilityLabel(String(localized: "Active profile"))
+                    .accessibilityLabel(localizedAppText("Active workflow", de: "Aktiver Workflow"))
                     .accessibilityValue(name)
             } else {
                 Color.clear.frame(width: 0, height: 0)
@@ -198,7 +201,8 @@ struct IndicatorRecordingContent: View {
 
 struct IndicatorExpandableText: View {
     let text: String
-    let sizing: IndicatorSizing
+    let fontSize: CGFloat
+    let expandedHeight: CGFloat
     let expanded: Bool
     let contentPadding: CGFloat
 
@@ -206,20 +210,21 @@ struct IndicatorExpandableText: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
                 Text(text)
-                    .font(.system(size: sizing.textFontSize))
+                    .font(.system(size: fontSize))
                     .foregroundStyle(.white.opacity(0.85))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, contentPadding)
                     .padding(.vertical, 14)
                     .id("bottom")
             }
-            .frame(height: expanded ? sizing.textExpandedHeight : 0)
+            .frame(height: expanded ? expandedHeight : 0)
             .clipped()
             .onChange(of: text) {
-                proxy.scrollTo("bottom", anchor: .bottom)
+                withAnimation(nil) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
         }
-        .transaction { $0.disablesAnimations = true }
         .accessibilityLabel(String(localized: "Streaming text"))
         .accessibilityValue(text)
     }
@@ -231,12 +236,13 @@ struct IndicatorActionFeedback: View {
     let message: String
     let icon: String?
     let isError: Bool
+    let iconColor: Color?
     let contentPadding: CGFloat
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon ?? (isError ? "xmark.circle.fill" : "checkmark.circle.fill"))
-                .foregroundStyle(isError ? .red : .green)
+                .foregroundStyle(iconColor ?? (isError ? .red : .green))
                 .font(.system(size: 16))
                 .accessibilityHidden(true)
             Text(message)

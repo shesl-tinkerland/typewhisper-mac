@@ -12,8 +12,10 @@ final class ServiceContainer: ObservableObject {
     let hotkeyService: HotkeyService
     let textInsertionService: TextInsertionService
     let historyService: HistoryService
+    let recentTranscriptionStore: RecentTranscriptionStore
     let textDiffService: TextDiffService
     let profileService: ProfileService
+    let workflowService: WorkflowService
     let translationService: AnyObject? // TranslationService (macOS 15+)
     let audioDuckingService: AudioDuckingService
     let mediaPlaybackService: MediaPlaybackService
@@ -60,14 +62,20 @@ final class ServiceContainer: ObservableObject {
 
     private init() {
         // Services
+        let inputActivationGuard = AudioInputDeviceActivationGuard()
         modelManagerService = ModelManagerService()
         audioFileService = AudioFileService()
-        audioRecordingService = AudioRecordingService()
+        audioRecordingService = AudioRecordingService(
+            inputActivationGuard: inputActivationGuard
+        )
         hotkeyService = HotkeyService()
         textInsertionService = TextInsertionService()
         historyService = HistoryService()
+        recentTranscriptionStore = RecentTranscriptionStore()
         textDiffService = TextDiffService()
         profileService = ProfileService()
+        workflowService = WorkflowService()
+        promptActionService = PromptActionService()
         #if canImport(Translation)
         if #available(macOS 15, *) {
             translationService = TranslationService()
@@ -82,8 +90,9 @@ final class ServiceContainer: ObservableObject {
         dictionaryService = DictionaryService()
         snippetService = SnippetService()
         soundService = SoundService()
-        audioDeviceService = AudioDeviceService()
-        promptActionService = PromptActionService()
+        audioDeviceService = AudioDeviceService(
+            inputActivationGuard: inputActivationGuard
+        )
         promptProcessingService = PromptProcessingService()
         pluginManager = PluginManager()
         pluginRegistryService = PluginRegistryService()
@@ -97,6 +106,7 @@ final class ServiceContainer: ObservableObject {
         punctuationVerificationService = PunctuationVerificationService(rulesLoader: punctuationRulesLoader)
         audioRecorderService = AudioRecorderService()
         promptProcessingService.memoryService = memoryService
+        promptProcessingService.modelManagerService = modelManagerService
         watchFolderService = WatchFolderService(audioFileService: audioFileService, modelManagerService: modelManagerService)
         accessibilityAnnouncementService = AccessibilityAnnouncementService()
         speechFeedbackService = SpeechFeedbackService()
@@ -117,7 +127,9 @@ final class ServiceContainer: ObservableObject {
             modelManager: modelManagerService,
             settingsViewModel: settingsViewModel,
             historyService: historyService,
+            recentTranscriptionStore: recentTranscriptionStore,
             profileService: profileService,
+            workflowService: workflowService,
             translationService: translationService,
             audioDuckingService: audioDuckingService,
             dictionaryService: dictionaryService,
@@ -138,7 +150,15 @@ final class ServiceContainer: ObservableObject {
 
         // HTTP API
         let router = APIRouter()
-        let handlers = APIHandlers(modelManager: modelManagerService, audioFileService: audioFileService, translationService: translationService, historyService: historyService, profileService: profileService, dictationViewModel: dictationViewModel)
+        let handlers = APIHandlers(
+            modelManager: modelManagerService,
+            audioFileService: audioFileService,
+            translationService: translationService,
+            historyService: historyService,
+            profileService: profileService,
+            dictionaryService: dictionaryService,
+            dictationViewModel: dictationViewModel
+        )
         handlers.register(on: router)
         httpServer = HTTPServer(router: router)
         apiServerViewModel = APIServerViewModel(httpServer: httpServer)
@@ -150,17 +170,22 @@ final class ServiceContainer: ObservableObject {
         profilesViewModel = ProfilesViewModel(
             profileService: profileService,
             historyService: historyService,
-            settingsViewModel: settingsViewModel
+            settingsViewModel: settingsViewModel,
+            textInsertionService: textInsertionService
         )
         dictionaryViewModel = DictionaryViewModel(dictionaryService: dictionaryService)
         snippetsViewModel = SnippetsViewModel(snippetService: snippetService)
         homeViewModel = HomeViewModel(historyService: historyService)
         promptActionsViewModel = PromptActionsViewModel(
             promptActionService: promptActionService,
-            promptProcessingService: promptProcessingService
+            promptProcessingService: promptProcessingService,
+            profileService: profileService
         )
         audioRecorderViewModel = AudioRecorderViewModel(recorderService: audioRecorderService, modelManager: modelManagerService, dictionaryService: dictionaryService)
-        watchFolderViewModel = WatchFolderViewModel(watchFolderService: watchFolderService)
+        watchFolderViewModel = WatchFolderViewModel(
+            watchFolderService: watchFolderService,
+            modelManager: modelManagerService
+        )
 
         // Set shared references
         FileTranscriptionViewModel._shared = fileTranscriptionViewModel
@@ -187,14 +212,16 @@ final class ServiceContainer: ObservableObject {
         TermPackRegistryService.shared = termPackRegistryService
 
         modelManagerService.observePluginManager()
+        promptProcessingService.observePluginManager()
         settingsViewModel.observePluginManager()
+        watchFolderViewModel.observePluginManager()
     }
 
     func initialize() async {
         guard !AppConstants.isRunningTests else { return }
 
         hotkeyService.setup()
-        dictationViewModel.registerInitialProfileHotkeys()
+        dictationViewModel.registerInitialTriggerHotkeys()
         let retentionDays = UserDefaults.standard.integer(forKey: UserDefaultsKeys.historyRetentionDays)
         if retentionDays > 0 { historyService.purgeOldRecords(retentionDays: retentionDays) }
 
@@ -202,22 +229,32 @@ final class ServiceContainer: ObservableObject {
             apiServerViewModel.startServer()
         }
 
-        pluginManager.setProfileNamesProvider { [weak self] in
-            self?.profileService.profiles.map(\.name) ?? []
+        pluginManager.setRuleNamesProvider { [weak self] in
+            guard let self else { return [] }
+            var names: [String] = []
+            for workflow in self.workflowService.workflows {
+                if !names.contains(workflow.name) {
+                    names.append(workflow.name)
+                }
+            }
+            for profile in self.profileService.profiles {
+                if !names.contains(profile.name) {
+                    names.append(profile.name)
+                }
+            }
+            return names
+        }
+        pluginManager.setWorkflowProvider { [weak self] in
+            self?.workflowService.workflows.map(\.pluginWorkflowInfo) ?? []
         }
         pluginManager.scanAndLoadPlugins()
 
         // Re-restore provider selection now that plugins are loaded
         modelManagerService.restoreProviderSelection()
+        watchFolderViewModel.reconcileSelectionWithAvailablePlugins()
 
         // Validate LLM provider selection against loaded plugins
         promptProcessingService.validateSelectionAfterPluginLoad()
-
-        // Check for plugin updates in background
-        pluginRegistryService.checkForUpdatesInBackground()
-
-        // Check for term pack updates in background
-        termPackRegistryService.checkForUpdatesInBackground()
 
         // Start memory service
         memoryService.startListening()

@@ -7,10 +7,12 @@ class MinimalIndicatorPanel: NSPanel {
     private static let panelWidth: CGFloat = 420
     private static let panelHeight: CGFloat = 160
 
+    private let screenResolver: IndicatorScreenResolver
     private var cancellables = Set<AnyCancellable>()
     private var cachedScreen: NSScreen?
 
-    init() {
+    init(screenResolver: IndicatorScreenResolver) {
+        self.screenResolver = screenResolver
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),
             styleMask: [.borderless, .nonactivatingPanel, .utilityWindow, .hudWindow],
@@ -23,11 +25,13 @@ class MinimalIndicatorPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false
         isMovable = false
-        level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
         appearance = NSAppearance(named: .darkAqua)
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         hidesOnDeactivate = false
         ignoresMouseEvents = true
+        FloatingPanelSpacePolicy.applyIndicatorPolicy(
+            to: self,
+            displayMode: DictationViewModel.shared.notchIndicatorDisplay
+        )
 
         let hostingView = NSHostingView(rootView: MinimalIndicatorView())
         hostingView.sizingOptions = []
@@ -113,20 +117,22 @@ class MinimalIndicatorPanel: NSPanel {
         }
 
         setFrame(NSRect(x: x, y: y, width: Self.panelWidth, height: Self.panelHeight), display: true)
-        orderFrontRegardless()
+        FloatingPanelSpacePolicy.orderIndicatorFront(
+            self,
+            displayMode: DictationViewModel.shared.notchIndicatorDisplay
+        )
     }
 
     private func resolveScreen() -> NSScreen {
-        let display = DictationViewModel.shared.notchIndicatorDisplay
-        switch display {
-        case .activeScreen:
-            let mouseLocation = NSEvent.mouseLocation
-            return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
-        case .primaryScreen:
-            return NSScreen.main ?? NSScreen.screens[0]
-        case .builtInScreen:
-            return NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
+        screenResolver.resolveScreen(for: DictationViewModel.shared.notchIndicatorDisplay)
+    }
+
+    func refreshPlacementForActiveContextChange() {
+        guard isVisible else { return }
+        if DictationViewModel.shared.notchIndicatorDisplay == .activeScreen {
+            cachedScreen = nil
         }
+        show()
     }
 
     func dismiss() {

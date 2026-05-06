@@ -6,12 +6,19 @@ final class HostServicesImpl: HostServices, @unchecked Sendable {
     let pluginId: String
     let pluginDataDirectory: URL
     let eventBus: EventBusProtocol
-    private let profileNamesProvider: () -> [String]
+    private let ruleNamesProvider: @MainActor () -> [String]
+    private let workflowProvider: @MainActor () -> [PluginWorkflowInfo]
 
-    init(pluginId: String, eventBus: EventBusProtocol, profileNamesProvider: @escaping () -> [String]) {
+    init(
+        pluginId: String,
+        eventBus: EventBusProtocol,
+        ruleNamesProvider: @escaping @MainActor () -> [String],
+        workflowProvider: @escaping @MainActor () -> [PluginWorkflowInfo] = { [] }
+    ) {
         self.pluginId = pluginId
         self.eventBus = eventBus
-        self.profileNamesProvider = profileNamesProvider
+        self.ruleNamesProvider = ruleNamesProvider
+        self.workflowProvider = workflowProvider
 
         self.pluginDataDirectory = AppConstants.appSupportDirectory
             .appendingPathComponent("PluginData", isDirectory: true)
@@ -57,10 +64,14 @@ final class HostServicesImpl: HostServices, @unchecked Sendable {
         NSWorkspace.shared.frontmostApplication?.localizedName
     }
 
-    // MARK: - Profiles
+    // MARK: - Rules
 
-    var availableProfileNames: [String] {
-        profileNamesProvider()
+    var availableRuleNames: [String] {
+        readMainActor(ruleNamesProvider)
+    }
+
+    var availableWorkflows: [PluginWorkflowInfo] {
+        readMainActor(workflowProvider)
     }
 
     // MARK: - Capabilities
@@ -76,6 +87,20 @@ final class HostServicesImpl: HostServices, @unchecked Sendable {
     func setStreamingDisplayActive(_ active: Bool) {
         DispatchQueue.main.async {
             DictationViewModel._shared?.updateExternalStreamingDisplay(active: active)
+        }
+    }
+
+    private func readMainActor<Value: Sendable>(_ body: @escaping @MainActor () -> Value) -> Value {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                body()
+            }
+        }
+
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                body()
+            }
         }
     }
 }

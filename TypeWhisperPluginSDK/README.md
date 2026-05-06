@@ -1,6 +1,6 @@
 # TypeWhisper Plugin SDK
 
-Build plugins for [TypeWhisper](https://github.com/TypeWhisper/typewhisper-mac) to add transcription engines, LLM providers, post-processors, and custom actions.
+Build plugins for [TypeWhisper](https://github.com/TypeWhisper/typewhisper-mac) to add transcription engines, text-to-speech providers, LLM providers, post-processors, and custom actions.
 
 ## Quick Start
 
@@ -22,6 +22,7 @@ Create `Contents/Resources/manifest.json` in your bundle:
   "name": "My Plugin",
   "version": "1.0.0",
   "minHostVersion": "1.0.0",
+  "sdkCompatibilityVersion": "v1",
   "minOSVersion": "14.0",
   "author": "Your Name",
   "principalClass": "MyPlugin"
@@ -31,6 +32,7 @@ Create `Contents/Resources/manifest.json` in your bundle:
 - `id` - Unique reverse-domain identifier
 - `principalClass` - Must match `@objc(ClassName)` on your plugin class
 - `minHostVersion` - Minimum TypeWhisper version required
+- `sdkCompatibilityVersion` - Must match `PluginSDKCompatibility.currentVersion` for marketplace/external plugins
 - `minOSVersion` - Minimum macOS version required (plugin is skipped on older systems)
 
 ### 3. Implement the Plugin
@@ -124,6 +126,42 @@ final class MyTranscriptionEngine: NSObject, TranscriptionEnginePlugin, @uncheck
 }
 ```
 
+If your engine exposes a wider selectable catalog than its currently loaded
+`transcriptionModels`, add the optional `TranscriptionModelCatalogProviding`
+conformance:
+
+```swift
+extension MyTranscriptionEngine: TranscriptionModelCatalogProviding {
+    var availableModels: [PluginModelInfo] {
+        [
+            PluginModelInfo(id: "small", displayName: "Small"),
+            PluginModelInfo(id: "large", displayName: "Large")
+        ]
+    }
+}
+```
+
+If your engine accepts custom dictionary terms and has documented limits, you can
+optionally add `DictionaryTermsBudgetProviding` so TypeWhisper clips the global
+dictionary before your engine sees it:
+
+```swift
+extension MyTranscriptionEngine: DictionaryTermsBudgetProviding {
+    var dictionaryTermsBudget: DictionaryTermsBudget {
+        DictionaryTermsBudget(
+            maxTerms: 1000,
+            maxCharsPerTerm: 50,
+            maxWordsPerTerm: 6,
+            maxTotalChars: 10_000
+        )
+    }
+}
+```
+
+This protocol is optional. Legacy plugins that do not adopt it remain compatible on
+`sdkCompatibilityVersion = "v1"` and automatically continue to use TypeWhisper's
+default 600-character fallback when building dictionary prompts.
+
 ### LLMProviderPlugin
 
 Add an LLM for prompt processing (text transformation, summarization, etc.).
@@ -162,6 +200,54 @@ let result = try await helper.process(
     apiKey: apiKey, model: "my-model",
     systemPrompt: systemPrompt, userText: userText
 )
+```
+
+### TTSProviderPlugin
+
+Add a text-to-speech provider for spoken feedback and manual readback.
+
+```swift
+@objc(MyTTSProvider)
+final class MyTTSProvider: NSObject, TTSProviderPlugin, @unchecked Sendable {
+    static let pluginId = "com.yourname.mytts"
+    static let pluginName = "My TTS"
+
+    private var host: HostServices?
+
+    required override init() { super.init() }
+    func activate(host: HostServices) { self.host = host }
+    func deactivate() { host = nil }
+
+    var providerId: String { "my-tts" }
+    var providerDisplayName: String { "My TTS" }
+    var isConfigured: Bool { true }
+    var availableVoices: [PluginVoiceInfo] {
+        [PluginVoiceInfo(id: "default", displayName: "Default Voice")]
+    }
+    var selectedVoiceId: String? { nil }
+    func selectVoice(_ voiceId: String?) {}
+
+    func speak(_ request: TTSSpeakRequest) async throws -> any TTSPlaybackSession {
+        // request.text     - text to speak
+        // request.language - optional language hint
+        // request.purpose  - .status, .transcription, or .manualReadback
+        MyPlaybackSession()
+    }
+}
+```
+
+`TTSPlaybackSession` must keep track of active playback so TypeWhisper can stop or replace it:
+
+```swift
+final class MyPlaybackSession: TTSPlaybackSession, @unchecked Sendable {
+    var isActive: Bool = true
+    var onFinish: (@Sendable () -> Void)?
+
+    func stop() {
+        isActive = false
+        onFinish?()
+    }
+}
 ```
 
 ### PostProcessorPlugin
@@ -252,14 +338,22 @@ func activate(host: HostServices) {
     let appName = host.activeAppName
     let bundleId = host.activeAppBundleId
 
-    // Profile names
-    let profiles = host.availableProfileNames
+    // Rule names
+    let rules = host.availableRuleNames
+
+    // User workflows as read-only SDK snapshots
+    let workflows = host.availableWorkflows
+    let workflowTriggerWords = workflows.compactMap { workflow in
+        workflow.behavior.settings["triggerWord"]
+    }
 
     // Host UI coordination
     host.notifyCapabilitiesChanged()
     host.setStreamingDisplayActive(true)
 }
 ```
+
+`availableWorkflows` exposes read-only `PluginWorkflowInfo` snapshots. Plugins can inspect workflow names, templates, enabled state, trigger metadata, behavior settings, LLM provider/model choices, temperature directives, and output routing without depending on TypeWhisper's internal SwiftData models.
 
 ---
 
@@ -345,7 +439,7 @@ let result = try await helper.process(
 ```
 
 You can override or omit the output-token parameter for providers that do not use the
-default `max_tokens` field:
+default `max_tokens` field, and optionally control whether `temperature` is sent:
 
 ```swift
 let result = try await helper.process(
@@ -355,6 +449,21 @@ let result = try await helper.process(
     userText: inputText,
     maxOutputTokens: 4096,
     maxOutputTokenParameter: "max_completion_tokens"
+)
+```
+
+For GPT-5 chat-completions requests with reasoning enabled, omit `temperature` entirely:
+
+```swift
+let result = try await helper.process(
+    apiKey: apiKey,
+    model: "gpt-5.4",
+    systemPrompt: "Fix grammar",
+    userText: inputText,
+    maxOutputTokens: 4096,
+    maxOutputTokenParameter: "max_completion_tokens",
+    reasoningEffort: "medium",
+    temperature: nil
 )
 ```
 
@@ -380,9 +489,15 @@ let wavData = PluginWavEncoder.encode(samples, sampleRate: 16000)
 | `name` | Yes | Display name |
 | `version` | Yes | Semver string (e.g. `1.0.0`) |
 | `minHostVersion` | No | Minimum TypeWhisper version (e.g. `1.0.0`) |
+| `sdkCompatibilityVersion` | No | Exact plugin SDK compatibility line. Marketplace/external plugins must match `PluginSDKCompatibility.currentVersion`. |
 | `minOSVersion` | No | Minimum macOS version (e.g. `14.0`, `26.0`). Plugin is skipped on older systems. |
 | `author` | No | Author name |
 | `principalClass` | Yes | Objective-C class name, must match `@objc(Name)` |
+| `category` | No | Primary/legacy marketplace category: `transcription`, `tts`, `llm`, `post-processor`, `action`, `memory`, or `utility`. |
+| `categories` | No | Optional list of all plugin capabilities. Use this for plugins that cover multiple surfaces, for example `["transcription", "llm"]`. |
+| `hosting` | No | Marketplace hosting classification: `local` or `cloud`. If omitted, TypeWhisper falls back to `requiresAPIKey == true` as cloud and otherwise local. |
+| `requiresAPIKey` | No | Whether the plugin specifically needs an API key credential. This is not the Local/Cloud category; use `hosting` for that. |
+| `iconSystemName` | No | SF Symbol name for marketplace and settings UI. |
 
 ---
 
@@ -393,7 +508,15 @@ To distribute via the TypeWhisper plugin marketplace:
 1. Build your plugin in Release configuration
 2. ZIP the `.bundle`: `ditto -ck --sequesterRsrc MyPlugin.bundle MyPlugin.zip`
 3. Host the ZIP (GitHub Releases, your own server, etc.)
-4. Submit a PR to add your plugin to the [plugin registry](https://github.com/TypeWhisper/typewhisper-mac/blob/gh-pages/plugins.json)
+4. Submit a PR adding `PluginRegistry/community-v1/com.yourname.myplugin.json`
+   on `main`. The registry workflow validates the PR and publishes the merged
+   feed to `gh-pages/plugins-community-v1.json` after merge.
+
+Registry feeds:
+
+- `plugins.json` - legacy plugins without `sdkCompatibilityVersion`
+- `plugins-v1.json` - current official `v1` SDK marketplace feed used by `1.3.x`
+- `plugins-community-v1.json` - `1.4+` community-capable `v1` SDK feed
 
 Registry entry format:
 
@@ -401,17 +524,29 @@ Registry entry format:
 {
   "id": "com.yourname.myplugin",
   "name": "My Plugin",
-  "version": "1.0.0",
-  "minHostVersion": "1.0.0",
-  "minOSVersion": "14.0",
   "author": "Your Name",
   "description": "What your plugin does.",
-  "category": "transcription|llm|postprocessor|action",
-  "size": 12345678,
-  "downloadURL": "https://example.com/MyPlugin.zip",
-  "iconSystemName": "star.fill"
+  "source": "community",
+  "category": "transcription|tts|llm|post-processor|action|memory|utility",
+  "categories": ["transcription", "llm"],
+  "hosting": "local|cloud",
+  "requiresAPIKey": false,
+  "iconSystemName": "star.fill",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "minHostVersion": "1.4.0",
+      "sdkCompatibilityVersion": "v1",
+      "minOSVersion": "14.0",
+      "supportedArchitectures": ["arm64"],
+      "size": 12345678,
+      "downloadURL": "https://example.com/MyPlugin.zip"
+    }
+  ]
 }
 ```
+
+`source` is registry metadata for the TypeWhisper Integrations UI. Omit it for official marketplace entries; TypeWhisper treats missing values as `official`. Use `"source": "community"` for community-maintained plugins submitted to the `1.4+` community feed. This field is not required in the plugin bundle manifest.
 
 ---
 

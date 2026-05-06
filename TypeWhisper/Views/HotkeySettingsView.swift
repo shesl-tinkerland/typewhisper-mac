@@ -46,10 +46,10 @@ struct HotkeySettingsView: View {
                 )
             }
 
-            Section(String(localized: "Prompt Palette")) {
+            Section(localizedAppText("Workflow Palette", de: "Workflow-Palette")) {
                 HotkeyRecorderView(
                     label: dictation.promptPaletteHotkeyLabel,
-                    title: String(localized: "Palette shortcut"),
+                    title: localizedAppText("Palette shortcut", de: "Palette-Shortcut"),
                     onRecord: { hotkey in
                         if let conflict = dictation.isHotkeyAssigned(hotkey, excluding: .promptPalette) {
                             dictation.clearHotkey(for: conflict)
@@ -59,9 +59,55 @@ struct HotkeySettingsView: View {
                     onClear: { dictation.clearHotkey(for: .promptPalette) }
                 )
 
-                Text(String(localized: "Select text in any app, press the shortcut, and choose a prompt to process the text."))
+                Text(localizedAppText(
+                    "Select or copy text in any app, press the shortcut, and choose a manual workflow to process the text.",
+                    de: "Markiere oder kopiere Text in einer App, drücke den Shortcut und wähle einen manuellen Workflow für die Verarbeitung."
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section(String(localized: "settings.tab.recorder")) {
+                HotkeyRecorderView(
+                    label: dictation.recorderToggleHotkeyLabel,
+                    title: String(localized: "recorder.shortcut.title"),
+                    subtitle: String(localized: "recorder.shortcut.description"),
+                    onRecord: { hotkey in
+                        if let conflict = dictation.isHotkeyAssigned(hotkey, excluding: .recorderToggle) {
+                            dictation.clearHotkey(for: conflict)
+                        }
+                        dictation.setHotkey(hotkey, for: .recorderToggle)
+                    },
+                    onClear: { dictation.clearHotkey(for: .recorderToggle) }
+                )
+            }
+
+            Section(String(localized: "Recent Transcriptions")) {
+                HotkeyRecorderView(
+                    label: dictation.recentTranscriptionsHotkeyLabel,
+                    title: String(localized: "Recent transcription shortcut"),
+                    subtitle: String(localized: "Open your latest transcriptions and insert one into the focused app."),
+                    onRecord: { hotkey in
+                        if let conflict = dictation.isHotkeyAssigned(hotkey, excluding: .recentTranscriptions) {
+                            dictation.clearHotkey(for: conflict)
+                        }
+                        dictation.setHotkey(hotkey, for: .recentTranscriptions)
+                    },
+                    onClear: { dictation.clearHotkey(for: .recentTranscriptions) }
+                )
+
+                HotkeyRecorderView(
+                    label: dictation.copyLastTranscriptionHotkeyLabel,
+                    title: String(localized: "Copy last transcription shortcut"),
+                    subtitle: String(localized: "Copy your latest transcription to the clipboard."),
+                    onRecord: { hotkey in
+                        if let conflict = dictation.isHotkeyAssigned(hotkey, excluding: .copyLastTranscription) {
+                            dictation.clearHotkey(for: conflict)
+                        }
+                        dictation.setHotkey(hotkey, for: .copyLastTranscription)
+                    },
+                    onClear: { dictation.clearHotkey(for: .copyLastTranscription) }
+                )
             }
         }
         .formStyle(.grouped)

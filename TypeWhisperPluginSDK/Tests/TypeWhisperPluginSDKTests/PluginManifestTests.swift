@@ -10,6 +10,7 @@ final class PluginManifestTests: XCTestCase {
               "name": "Mock Plugin",
               "version": "1.2.3",
               "minHostVersion": "1.0.0",
+              "sdkCompatibilityVersion": "v1",
               "minOSVersion": "14.0",
               "author": "TypeWhisper",
               "principalClass": "MockPlugin"
@@ -26,10 +27,108 @@ final class PluginManifestTests: XCTestCase {
                 name: "Mock Plugin",
                 version: "1.2.3",
                 minHostVersion: "1.0.0",
+                sdkCompatibilityVersion: "v1",
                 minOSVersion: "14.0",
                 author: "TypeWhisper",
                 principalClass: "MockPlugin"
             )
         )
+    }
+
+    func testPluginManifestDecodesSupportedArchitecturesWhenPresent() throws {
+        let data = Data(
+            """
+            {
+              "id": "com.typewhisper.mock",
+              "name": "Mock Plugin",
+              "version": "1.2.3",
+              "supportedArchitectures": ["arm64"],
+              "principalClass": "MockPlugin"
+            }
+            """.utf8
+        )
+
+        let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
+
+        XCTAssertEqual(manifest.supportedArchitectures, ["arm64"])
+    }
+
+    func testPluginManifestDecodesSDKCompatibilityVersionWhenPresent() throws {
+        let data = Data(
+            """
+            {
+              "id": "com.typewhisper.mock",
+              "name": "Mock Plugin",
+              "version": "1.2.3",
+              "sdkCompatibilityVersion": "v1",
+              "principalClass": "MockPlugin"
+            }
+            """.utf8
+        )
+
+        let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
+
+        XCTAssertEqual(manifest.sdkCompatibilityVersion, "v1")
+    }
+
+    func testPluginManifestDecodesHostingWhenPresent() throws {
+        let data = Data(
+            """
+            {
+              "id": "com.typewhisper.cloud",
+              "name": "Cloud Plugin",
+              "version": "1.2.3",
+              "principalClass": "CloudPlugin",
+              "hosting": "cloud",
+              "requiresAPIKey": false
+            }
+            """.utf8
+        )
+
+        let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
+
+        XCTAssertEqual(manifest.hosting, .cloud)
+        XCTAssertEqual(manifest.requiresAPIKey, false)
+        XCTAssertEqual(manifest.resolvedHosting, .cloud)
+    }
+
+    func testPluginManifestDecodesMultipleCategoryIdentifiers() throws {
+        let data = Data(
+            """
+            {
+              "id": "com.typewhisper.multi",
+              "name": "Multi Plugin",
+              "version": "1.2.3",
+              "principalClass": "MultiPlugin",
+              "category": "transcription",
+              "categories": ["transcription", "llm", "memory"]
+            }
+            """.utf8
+        )
+
+        let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
+
+        XCTAssertEqual(manifest.category, "transcription")
+        XCTAssertEqual(manifest.categories, ["transcription", "llm", "memory"])
+        XCTAssertEqual(manifest.resolvedCategoryIdentifiers, ["transcription", "llm", "memory"])
+    }
+
+    func testPluginManifestResolvedHostingFallsBackToAPIKeyRequirement() {
+        let cloudManifest = PluginManifest(
+            id: "com.typewhisper.remote",
+            name: "Remote Plugin",
+            version: "1.0.0",
+            principalClass: "RemotePlugin",
+            requiresAPIKey: true
+        )
+        let localManifest = PluginManifest(
+            id: "com.typewhisper.local",
+            name: "Local Plugin",
+            version: "1.0.0",
+            principalClass: "LocalPlugin"
+        )
+
+        XCTAssertEqual(cloudManifest.resolvedHosting, .cloud)
+        XCTAssertEqual(localManifest.resolvedHosting, .local)
     }
 }

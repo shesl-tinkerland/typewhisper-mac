@@ -12,14 +12,19 @@ enum UserDefaultsKeys {
     static let soundError = "soundError"
     static let indicatorStyle = "indicatorStyle"
     static let indicatorTranscriptPreviewEnabled = "indicatorTranscriptPreviewEnabled"
+    static let indicatorTranscriptPreviewFontSizeOffset = "indicatorTranscriptPreviewFontSizeOffset"
     static let preserveClipboard = "preserveClipboard"
     static let mediaPauseEnabled = "mediaPauseEnabled"
+    static let transcribeShortQuietClipsAggressively = "transcribeShortQuietClipsAggressively"
 
     // MARK: - Hotkey (JSON-encoded UnifiedHotkey per slot)
     static let hybridHotkey = "hybridHotkey"
     static let pttHotkey = "pttHotkey"
     static let toggleHotkey = "toggleHotkey"
     static let promptPaletteHotkey = "promptPaletteHotkey"
+    static let recentTranscriptionsHotkey = "recentTranscriptionsHotkey"
+    static let copyLastTranscriptionHotkey = "copyLastTranscriptionHotkey"
+    static let recorderToggleHotkey = "recorderToggleHotkey"
 
     // MARK: - Model / Engine
     static let selectedEngine = "selectedEngine"
@@ -65,6 +70,7 @@ enum UserDefaultsKeys {
 
     // MARK: - Appearance
     static let showMenuBarIcon = "showMenuBarIcon"
+    static let dockIconBehaviorWhenMenuBarHidden = "dockIconBehaviorWhenMenuBarHidden"
     static let menuBarIconHiddenAlertShown = "menuBarIconHiddenAlertShown"
 
     // MARK: - Memory
@@ -80,6 +86,7 @@ enum UserDefaultsKeys {
 
     // MARK: - Accessibility
     static let spokenFeedbackEnabled = "spokenFeedbackEnabled"
+    static let spokenFeedbackProviderId = "spokenFeedbackProviderId"
 
     // MARK: - Plugin Registry
     static let pluginRegistryLastFetch = "pluginRegistryLastFetch"
@@ -91,7 +98,6 @@ enum UserDefaultsKeys {
     static let recorderTranscriptionEnabled = "recorderTranscriptionEnabled"
     static let recorderMicDuckingMode = "recorderMicDuckingMode"
     static let recorderTrackMode = "recorderTrackMode"
-    static let showRecorderTab = "showRecorderTab"
 
     // MARK: - Watch Folder
     static let watchFolderBookmark = "watchFolderBookmark"
@@ -103,13 +109,21 @@ enum UserDefaultsKeys {
     static let watchFolderEngine = "watchFolderEngine"
     static let watchFolderModel = "watchFolderModel"
 
+    // MARK: - Workflows
+    static let workflowDefaultLLMProviderId = "workflowDefaultLLMProviderId"
+    static let workflowDefaultLLMCloudModel = "workflowDefaultLLMCloudModel"
+
     // MARK: - Licensing
+    static let usageIntent = "usageIntent"
     static let userType = "userType"
     static let licenseStatus = "licenseStatus"
     static let licenseTier = "licenseTier"
     static let lastLicenseValidation = "lastLicenseValidation"
     static let licenseIsLifetime = "licenseIsLifetime"
     static let welcomeSheetShown = "welcomeSheetShown"
+    static let workUsagePromptDismissed = "workUsagePromptDismissed"
+    static let lastSeenReleaseFingerprint = "lastSeenReleaseFingerprint"
+    static let lastAcknowledgedPostUpdatePromptRelease = "lastAcknowledgedPostUpdatePromptRelease"
 
     // MARK: - Supporter
     static let supporterTier = "supporterTier"

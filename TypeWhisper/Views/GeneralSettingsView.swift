@@ -2,6 +2,12 @@ import SwiftUI
 import ServiceManagement
 
 struct GeneralSettingsView: View {
+    private enum AppVisibilityMode: String, CaseIterable {
+        case menuBar
+        case dock
+        case dockWhileWindowOpen
+    }
+
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var appLanguage: String = {
         if let lang = UserDefaults.standard.string(forKey: UserDefaultsKeys.preferredAppLanguage) {
@@ -10,30 +16,77 @@ struct GeneralSettingsView: View {
         return Locale.preferredLanguages.first?.hasPrefix("de") == true ? "de" : "en"
     }()
     @State private var showRestartAlert = false
-    @State private var showMenuBarIconHiddenAlert = false
     @AppStorage(UserDefaultsKeys.showMenuBarIcon) private var showMenuBarIcon = true
-    @AppStorage(UserDefaultsKeys.showRecorderTab) private var showRecorderTab = false
+    @AppStorage(UserDefaultsKeys.dockIconBehaviorWhenMenuBarHidden) private var dockIconBehaviorRawValue = DockIconBehavior.keepVisible.rawValue
+    @ObservedObject private var pluginManager = PluginManager.shared
     @ObservedObject private var settings = SettingsViewModel.shared
     @ObservedObject private var dictation = DictationViewModel.shared
 
     private var supportsTranscriptPreview: Bool {
-        dictation.indicatorStyle != .minimal
+        dictation.indicatorStyle.supportsTranscriptPreview
     }
 
     private var supportsPositionSelection: Bool {
         dictation.indicatorStyle == .overlay || dictation.indicatorStyle == .minimal
     }
 
+    private var dockIconBehavior: DockIconBehavior {
+        get { DockIconBehavior(rawValue: dockIconBehaviorRawValue) ?? .keepVisible }
+        nonmutating set { dockIconBehaviorRawValue = newValue.rawValue }
+    }
+
+    private var appVisibilityMode: AppVisibilityMode {
+        get {
+            if showMenuBarIcon {
+                return .menuBar
+            }
+
+            return dockIconBehavior == .keepVisible ? .dock : .dockWhileWindowOpen
+        }
+        nonmutating set {
+            switch newValue {
+            case .menuBar:
+                showMenuBarIcon = true
+                dockIconBehavior = .keepVisible
+            case .dock:
+                showMenuBarIcon = false
+                dockIconBehavior = .keepVisible
+            case .dockWhileWindowOpen:
+                showMenuBarIcon = false
+                dockIconBehavior = .onlyWhileWindowOpen
+            }
+        }
+    }
+
+    private var appVisibilityDescription: LocalizedStringKey {
+        switch appVisibilityMode {
+        case .menuBar:
+            "TypeWhisper stays in the menu bar and hides its Dock icon while no window is open."
+        case .dock:
+            "TypeWhisper stays accessible via the Dock icon."
+        case .dockWhileWindowOpen:
+            "TypeWhisper hides both icons until a window opens. To reopen Settings later, launch TypeWhisper from Spotlight or the Applications folder."
+        }
+    }
+
+    private var indicatorTranscriptPreviewSliderValue: Binding<Double> {
+        Binding(
+            get: { Double(dictation.indicatorTranscriptPreviewFontSizeOffset) },
+            set: { dictation.indicatorTranscriptPreviewFontSizeOffset = Int($0.rounded()) }
+        )
+    }
+
+    private var indicatorTranscriptPreviewSizeLabel: String {
+        "\(Int(dictation.indicatorTranscriptPreviewFontSize(for: dictation.indicatorStyle))) pt"
+    }
+
     var body: some View {
         Form {
             Section(String(localized: "Spoken Language")) {
-                Picker(String(localized: "Spoken language"), selection: $settings.selectedLanguage) {
-                    Text(String(localized: "Auto-detect")).tag(nil as String?)
-                    Divider()
-                    ForEach(settings.availableLanguages, id: \.code) { lang in
-                        Text(lang.name).tag(lang.code as String?)
-                    }
-                }
+                LanguageSelectionEditor(
+                    selection: $settings.languageSelection,
+                    availableLanguages: settings.availableLanguages
+                )
 
                 Text(String(localized: "The language being spoken. Setting this explicitly improves accuracy."))
                     .font(.caption)
@@ -84,24 +137,16 @@ struct GeneralSettingsView: View {
             }
 
             Section(String(localized: "Appearance")) {
-                Toggle(String(localized: "Show menu bar icon"), isOn: $showMenuBarIcon)
-                    .onChange(of: showMenuBarIcon) { _, newValue in
-                        if !newValue {
-                            let alertShown = UserDefaults.standard.bool(forKey: UserDefaultsKeys.menuBarIconHiddenAlertShown)
-                            if !alertShown {
-                                showMenuBarIconHiddenAlert = true
-                                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.menuBarIconHiddenAlertShown)
-                            }
-                        }
-                    }
+                Picker(String(localized: "App visibility"), selection: Binding(
+                    get: { appVisibilityMode },
+                    set: { appVisibilityMode = $0 }
+                )) {
+                    Text(String(localized: "Menu bar icon")).tag(AppVisibilityMode.menuBar)
+                    Text(String(localized: "Dock icon")).tag(AppVisibilityMode.dock)
+                    Text(String(localized: "Dock icon only while a window is open")).tag(AppVisibilityMode.dockWhileWindowOpen)
+                }
 
-                Text(String(localized: "When hidden, the app is accessible via the Dock icon."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle(String(localized: "settings.showRecorderTab"), isOn: $showRecorderTab)
-
-                Text(String(localized: "settings.showRecorderTab.description"))
+                Text(appVisibilityDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -118,8 +163,21 @@ struct GeneralSettingsView: View {
                 if supportsTranscriptPreview {
                     Toggle(String(localized: "Show live transcript preview"), isOn: $dictation.indicatorTranscriptPreviewEnabled)
 
+                    LabeledContent(String(localized: "Live transcript size")) {
+                        HStack(spacing: 12) {
+                            Slider(value: indicatorTranscriptPreviewSliderValue, in: 0...8, step: 1)
+                                .frame(width: 180)
+
+                            Text(verbatim: indicatorTranscriptPreviewSizeLabel)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 54, alignment: .trailing)
+                        }
+                    }
+                    .disabled(!dictation.indicatorTranscriptPreviewEnabled)
+
                     if !dictation.indicatorTranscriptPreviewEnabled {
-                        Text(String(localized: "When disabled, the indicator only shows recording status while transcription continues in the background."))
+                        Text(String(localized: "When disabled, TypeWhisper skips live transcript requests for the indicator and only runs the final transcription after you stop recording."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -181,11 +239,6 @@ struct GeneralSettingsView: View {
         } message: {
             Text(String(localized: "The language change will take effect after restarting TypeWhisper."))
         }
-        .alert(String(localized: "Menu bar icon hidden"), isPresented: $showMenuBarIconHiddenAlert) {
-            Button(String(localized: "OK"), role: .cancel) {}
-        } message: {
-            Text(String(localized: "You can access TypeWhisper settings via the Dock icon."))
-        }
     }
 
     private func restartApp() {
@@ -204,7 +257,7 @@ struct GeneralSettingsView: View {
         Text(String(localized: "Recording Indicator")).tag(NotchIndicatorContent.indicator)
         Text(String(localized: "Timer")).tag(NotchIndicatorContent.timer)
         Text(String(localized: "Waveform")).tag(NotchIndicatorContent.waveform)
-        Text(String(localized: "Profile")).tag(NotchIndicatorContent.profile)
+        Text(localizedAppText("Workflow", de: "Workflow")).tag(NotchIndicatorContent.profile)
         Text(String(localized: "None")).tag(NotchIndicatorContent.none)
     }
 

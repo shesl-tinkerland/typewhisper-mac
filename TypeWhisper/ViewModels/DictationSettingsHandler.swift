@@ -6,6 +6,7 @@ final class DictationSettingsHandler {
     private let audioRecordingService: AudioRecordingService
     private let textInsertionService: TextInsertionService
     private let profileService: ProfileService
+    private let workflowService: WorkflowService
     private var permissionPollTask: Task<Void, Never>?
 
     var onObjectWillChange: (() -> Void)?
@@ -15,12 +16,14 @@ final class DictationSettingsHandler {
         hotkeyService: HotkeyService,
         audioRecordingService: AudioRecordingService,
         textInsertionService: TextInsertionService,
-        profileService: ProfileService
+        profileService: ProfileService,
+        workflowService: WorkflowService
     ) {
         self.hotkeyService = hotkeyService
         self.audioRecordingService = audioRecordingService
         self.textInsertionService = textInsertionService
         self.profileService = profileService
+        self.workflowService = workflowService
     }
 
     func requestMicPermission() {
@@ -52,16 +55,31 @@ final class DictationSettingsHandler {
         hotkeyService.isHotkeyAssigned(hotkey, excluding: excluding)
     }
 
-    static func loadHotkeyLabel(for slotType: HotkeySlotType) -> String {
-        if let data = UserDefaults.standard.data(forKey: slotType.defaultsKey),
-           let hotkey = try? JSONDecoder().decode(UnifiedHotkey.self, from: data) {
-            return HotkeyService.displayName(for: hotkey)
+    static func loadHotkey(for slotType: HotkeySlotType) -> UnifiedHotkey? {
+        guard let data = UserDefaults.standard.data(forKey: slotType.defaultsKey) else {
+            return nil
         }
-        return ""
+        return try? JSONDecoder().decode(UnifiedHotkey.self, from: data)
     }
 
-    func registerInitialProfileHotkeys() {
+    static func loadHotkeyLabel(for slotType: HotkeySlotType) -> String {
+        guard let hotkey = loadHotkey(for: slotType) else { return "" }
+        return HotkeyService.displayName(for: hotkey)
+    }
+
+    static func loadMenuShortcutDescriptor(for slotType: HotkeySlotType) -> HotkeyService.MenuShortcutDescriptor? {
+        guard let hotkey = loadHotkey(for: slotType) else { return nil }
+        return HotkeyService.menuShortcutDescriptor(for: hotkey)
+    }
+
+    func registerInitialTriggerHotkeys() {
         syncProfileHotkeys(profileService.profiles)
+        syncWorkflowHotkeys(workflowService.workflows)
+    }
+
+    @available(*, deprecated, renamed: "registerInitialTriggerHotkeys")
+    func registerInitialProfileHotkeys() {
+        registerInitialTriggerHotkeys()
     }
 
     func syncProfileHotkeys(_ profiles: [Profile]) {
@@ -72,6 +90,20 @@ final class DictationSettingsHandler {
                 return (id: profile.id, hotkey: hotkey)
             }
         hotkeyService.registerProfileHotkeys(entries)
+    }
+
+    func syncWorkflowHotkeys(_ workflows: [Workflow]) {
+        let entries = workflows
+            .filter(\.isEnabled)
+            .flatMap { workflow -> [(id: UUID, hotkey: UnifiedHotkey, behavior: WorkflowHotkeyBehavior)] in
+                guard let trigger = workflow.trigger, !trigger.hotkeys.isEmpty else {
+                    return []
+                }
+                return trigger.hotkeys.map { hotkey in
+                    (id: workflow.id, hotkey: hotkey, behavior: trigger.hotkeyBehavior)
+                }
+            }
+        hotkeyService.registerWorkflowHotkeys(entries)
     }
 
     func pollPermissionStatus() {

@@ -19,15 +19,20 @@ struct OverlayIndicatorView: View {
         viewModel.state == .inserting && viewModel.actionFeedbackMessage != nil
     }
 
+    private var hasRecordingCancelWarning: Bool {
+        viewModel.state == .recording && viewModel.recordingCancelWarningMessage != nil
+    }
+
     private var showTranscriptPreview: Bool {
         viewModel.indicatorTranscriptPreviewEnabled && !suppressStreamingText
     }
 
     private var isExpanded: Bool {
-        textExpanded || hasActionFeedback
+        textExpanded || hasActionFeedback || hasRecordingCancelWarning
     }
 
     private var currentWidth: CGFloat {
+        if hasRecordingCancelWarning { return max(closedWidth, 340) }
         if textExpanded { return max(closedWidth, 400) }
         if hasActionFeedback { return max(closedWidth, 340) }
         return closedWidth
@@ -35,6 +40,14 @@ struct OverlayIndicatorView: View {
 
     private var isTop: Bool {
         viewModel.overlayPosition == .top
+    }
+
+    private var transcriptFontSize: CGFloat {
+        viewModel.indicatorTranscriptPreviewFontSize(for: .overlay)
+    }
+
+    private var transcriptExpandedHeight: CGFloat {
+        viewModel.indicatorTranscriptPreviewExpandedHeight(for: .overlay)
     }
 
     var body: some View {
@@ -98,12 +111,21 @@ struct OverlayIndicatorView: View {
 
     @ViewBuilder
     private var expandableContent: some View {
-        if isTop {
+        if hasRecordingCancelWarning {
+            IndicatorActionFeedback(
+                message: viewModel.recordingCancelWarningMessage ?? "",
+                icon: "exclamationmark.triangle.fill",
+                isError: false,
+                iconColor: .yellow,
+                contentPadding: contentPadding
+            )
+        } else if isTop {
             // Top position: text expands downward, action feedback below text
             if viewModel.state == .recording, showTranscriptPreview {
                 IndicatorExpandableText(
                     text: viewModel.partialText,
-                    sizing: sizing,
+                    fontSize: transcriptFontSize,
+                    expandedHeight: transcriptExpandedHeight,
                     expanded: textExpanded,
                     contentPadding: contentPadding
                 )
@@ -122,6 +144,7 @@ struct OverlayIndicatorView: View {
                     message: viewModel.actionFeedbackMessage ?? "",
                     icon: viewModel.actionFeedbackIcon,
                     isError: viewModel.actionFeedbackIsError,
+                    iconColor: nil,
                     contentPadding: contentPadding
                 )
             }
@@ -132,6 +155,7 @@ struct OverlayIndicatorView: View {
                     message: viewModel.actionFeedbackMessage ?? "",
                     icon: viewModel.actionFeedbackIcon,
                     isError: viewModel.actionFeedbackIsError,
+                    iconColor: nil,
                     contentPadding: contentPadding
                 )
                 Divider().background(Color.white.opacity(0.1))
@@ -140,7 +164,8 @@ struct OverlayIndicatorView: View {
             if viewModel.state == .recording, showTranscriptPreview {
                 IndicatorExpandableText(
                     text: viewModel.partialText,
-                    sizing: sizing,
+                    fontSize: transcriptFontSize,
+                    expandedHeight: transcriptExpandedHeight,
                     expanded: textExpanded,
                     contentPadding: contentPadding
                 )
