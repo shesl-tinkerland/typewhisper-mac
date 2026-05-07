@@ -26,6 +26,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "OpenAIPlugin",
+            dependencies: ["TypeWhisperPluginSDK"],
+            path: "Plugins/OpenAIPlugin",
+            exclude: ["Tests"],
+            resources: [
+                .process("Localizable.xcstrings"),
+                .process("manifest.json"),
+            ]
+        ),
+        .target(
             name: "FillerWordsPlugin",
             dependencies: ["TypeWhisperPluginSDK"],
             path: "Plugins/FillerWordsPlugin",
@@ -94,6 +104,15 @@ let package = Package(
                 "OpenAICompatiblePlugin",
             ],
             path: "Plugins/OpenAICompatiblePlugin/Tests"
+        ),
+        .testTarget(
+            name: "OpenAIPluginTests",
+            dependencies: [
+                "TypeWhisperPluginSDK",
+                "TypeWhisperPluginSDKTesting",
+                "OpenAIPlugin",
+            ],
+            path: "Plugins/OpenAIPlugin/Tests"
         ),
         .testTarget(
             name: "FillerWordsPluginTests",
