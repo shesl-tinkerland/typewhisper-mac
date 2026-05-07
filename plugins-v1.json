@@ -266,15 +266,23 @@
       "id": "com.typewhisper.openai",
       "name": "OpenAI / ChatGPT",
       "author": "TypeWhisper",
-      "description": "Cloud transcription plus OpenAI/ChatGPT prompts. Use an API key or ChatGPT login.",
+      "description": "Cloud transcription, OpenAI/ChatGPT prompts, and text-to-speech. Use an API key for STT/TTS or ChatGPT login for prompts.",
       "descriptions": {
-        "de": "Cloud-Transkription plus OpenAI-/ChatGPT-Prompts. Nutzbar per API-Key oder ChatGPT-Login."
+        "de": "Cloud-Transkription, OpenAI-/ChatGPT-Prompts und Text-to-Speech. STT/TTS brauchen einen API-Key, Prompts funktionieren auch per ChatGPT-Login."
       },
       "category": "transcription",
       "downloadCount": 1424,
       "iconSystemName": "brain",
       "requiresAPIKey": false,
       "releases": [
+        {
+          "version": "1.2.0",
+          "minHostVersion": "1.4.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 527055,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-openai-v1.2.0/OpenAIPlugin.zip",
+          "minOSVersion": "14.0"
+        },
         {
           "version": "1.1.6",
           "minHostVersion": "1.2.2",
