@@ -1122,6 +1122,17 @@
       "iconSystemName": "cpu",
       "releases": [
         {
+          "version": "1.0.6",
+          "minHostVersion": "0.11.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 18109860,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-gemma4-v1.0.6/Gemma4Plugin.zip",
+          "minOSVersion": "14.0",
+          "supportedArchitectures": [
+            "arm64"
+          ]
+        },
+        {
           "version": "1.0.5",
           "minHostVersion": "0.11.0",
           "sdkCompatibilityVersion": "v1",
