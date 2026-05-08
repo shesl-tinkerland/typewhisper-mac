@@ -1651,7 +1651,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
     }
 
     @MainActor
-    func testApiStartRecording_startsAudioBeforeDeferredSelectedTextCapture() async throws {
+    func testApiStartRecording_startsAudioBeforeContextAndDeferredSelectedTextCapture() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
         var dictationContext: DictationContext?
         defer {
@@ -1683,10 +1683,10 @@ final class APIRouterAndHandlersTests: XCTestCase {
         _ = context.dictationViewModel.apiStartRecording()
 
         XCTAssertEqual(context.dictationViewModel.state, DictationViewModel.State.recording)
-        XCTAssertEqual(events, ["capture_app", "start_audio"])
+        XCTAssertEqual(events, ["start_audio", "capture_app"])
 
         await fulfillment(of: [selectedTextCaptured], timeout: 1.0)
-        XCTAssertEqual(Array(events.prefix(3)), ["capture_app", "start_audio", "selected_text"])
+        XCTAssertEqual(Array(events.prefix(3)), ["start_audio", "capture_app", "selected_text"])
     }
 
     @MainActor
@@ -1801,7 +1801,56 @@ final class APIRouterAndHandlersTests: XCTestCase {
 
         _ = context.dictationViewModel.apiStartRecording()
 
-        XCTAssertEqual(Array(events.prefix(3)), ["capture_app", "start_audio", "pause_media"])
+        XCTAssertEqual(Array(events.prefix(3)), ["start_audio", "pause_media", "capture_app"])
+    }
+
+    @MainActor
+    func testApiStartRecordingFailureSkipsPostAudioStartSideEffects() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var events: [String] = []
+        let mediaPlaybackService = MockMediaPlaybackService {
+            events.append("pause_media")
+        }
+        let soundService = MockSoundService { event, enabled in
+            guard event == .recordingStarted, enabled else { return }
+            events.append("start_sound")
+        }
+        var dictationContext: DictationContext?
+        defer {
+            dictationContext = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        dictationContext = Self.makeDictationContext(
+            appSupportDirectory: appSupportDirectory,
+            mediaPlaybackService: mediaPlaybackService,
+            soundService: soundService
+        )
+        let context = try XCTUnwrap(dictationContext)
+        context.dictationViewModel.mediaPauseEnabled = true
+        context.dictationViewModel.soundFeedbackEnabled = true
+        context.audioRecordingService.hasMicrophonePermissionOverride = true
+        context.audioRecordingService.inputAvailabilityOverride = { _ in true }
+        context.textInsertionService.captureActiveAppOverride = {
+            events.append("capture_app")
+            return ("Notes", "com.apple.Notes", nil)
+        }
+        context.audioRecordingService.startRecordingOverride = {
+            events.append("start_audio")
+            throw NSError(
+                domain: "TypeWhisperTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Audio start failed"]
+            )
+        }
+
+        let sessionID = context.dictationViewModel.apiStartRecording()
+
+        XCTAssertEqual(events, ["start_audio"])
+        XCTAssertEqual(context.dictationViewModel.state, .inserting)
+        XCTAssertEqual(context.dictationViewModel.actionFeedbackMessage, "Audio start failed")
+        XCTAssertEqual(context.dictationViewModel.apiDictationSession(id: sessionID)?.status, .failed)
+        XCTAssertEqual(context.dictationViewModel.apiDictationSession(id: sessionID)?.error, "Audio start failed")
     }
 
     @MainActor

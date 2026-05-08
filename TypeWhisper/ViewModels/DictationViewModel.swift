@@ -776,31 +776,14 @@ final class DictationViewModel: ObservableObject {
             return
         }
 
-        // Match rule: forced manual override or app-based matching
-        let activeApp = textInsertionService.captureActiveApp()
-        capturedActiveApp = activeApp
-        capturedSelectedText = nil
-        activeAppIcon = nil
-
-        if let forcedWorkflowId,
-           let forcedWorkflow = workflowService.workflows.first(where: { $0.id == forcedWorkflowId && $0.isEnabled }) {
-            applyWorkflowMatch(workflowService.forcedWorkflowMatch(for: forcedWorkflow), activeApp: activeApp)
-        } else if let forcedProfileId,
-           let forcedProfile = profileService.profiles.first(where: { $0.id == forcedProfileId && $0.isEnabled }) {
-            applyRuleMatch(profileService.forcedRuleMatch(for: forcedProfile), activeApp: activeApp)
-        } else if let workflowMatch = workflowService.matchWorkflow(bundleIdentifier: activeApp.bundleId, url: nil) {
-            applyWorkflowMatch(workflowMatch, activeApp: activeApp)
-        } else {
-            applyRuleMatch(profileService.matchRule(bundleIdentifier: activeApp.bundleId, url: nil), activeApp: activeApp)
-        }
-        let immediateContextMs = (CFAbsoluteTimeGetCurrent() - startTimestamp) * 1000
-
         do {
             audioRecordingService.selectedDeviceID = audioDeviceService.selectedDeviceID
             audioRecordingService.hasExplicitDeviceSelection = audioDeviceService.selectedDeviceUID != nil
             let selectedInputUsesBluetooth = audioDeviceService.selectedDeviceUsesBluetoothTransport
             audioRecordingService.selectedInputDeviceUsesBluetoothTransport = selectedInputUsesBluetooth
+            let audioStartTimestamp = CFAbsoluteTimeGetCurrent()
             try audioRecordingService.startRecording()
+            let audioStartMs = (CFAbsoluteTimeGetCurrent() - audioStartTimestamp) * 1000
             if selectedInputUsesBluetooth {
                 logger.info("Skipping recording start sound for Bluetooth input device")
             } else {
@@ -820,6 +803,28 @@ final class DictationViewModel: ObservableObject {
             isStopInFlight = false
             recordingStartTime = Date()
             startRecordingTimer()
+
+            let contextStartTimestamp = CFAbsoluteTimeGetCurrent()
+            // Match rule after the audio engine is live so app/context lookup does
+            // not delay capture of the user's first spoken words.
+            let activeApp = textInsertionService.captureActiveApp()
+            capturedActiveApp = activeApp
+            capturedSelectedText = nil
+            activeAppIcon = nil
+
+            if let forcedWorkflowId,
+               let forcedWorkflow = workflowService.workflows.first(where: { $0.id == forcedWorkflowId && $0.isEnabled }) {
+                applyWorkflowMatch(workflowService.forcedWorkflowMatch(for: forcedWorkflow), activeApp: activeApp)
+            } else if let forcedProfileId,
+               let forcedProfile = profileService.profiles.first(where: { $0.id == forcedProfileId && $0.isEnabled }) {
+                applyRuleMatch(profileService.forcedRuleMatch(for: forcedProfile), activeApp: activeApp)
+            } else if let workflowMatch = workflowService.matchWorkflow(bundleIdentifier: activeApp.bundleId, url: nil) {
+                applyWorkflowMatch(workflowMatch, activeApp: activeApp)
+            } else {
+                applyRuleMatch(profileService.matchRule(bundleIdentifier: activeApp.bundleId, url: nil), activeApp: activeApp)
+            }
+            let contextMs = (CFAbsoluteTimeGetCurrent() - contextStartTimestamp) * 1000
+
             startLiveStreaming(allowLiveTranscription: indicatorTranscriptPreviewEnabled || externalStreamingDisplayCount > 0)
             EventBus.shared.emit(.recordingStarted(RecordingStartedPayload(
                 appName: capturedActiveApp?.name,
@@ -833,7 +838,7 @@ final class DictationViewModel: ObservableObject {
 
             let totalStartMs = (CFAbsoluteTimeGetCurrent() - startTimestamp) * 1000
             logger.info(
-                "Recording started: immediateContextMs=\(String(format: "%.1f", immediateContextMs), privacy: .public), totalStartMs=\(String(format: "%.1f", totalStartMs), privacy: .public)"
+                "Recording started: audioStartMs=\(String(format: "%.1f", audioStartMs), privacy: .public), contextMs=\(String(format: "%.1f", contextMs), privacy: .public), totalStartMs=\(String(format: "%.1f", totalStartMs), privacy: .public)"
             )
         } catch {
             clearDeferredRecordingContext()
