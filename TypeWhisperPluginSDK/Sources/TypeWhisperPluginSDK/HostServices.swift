@@ -56,6 +56,8 @@ public extension HostServices {
 /// session so fast plugin requests can keep DNS/TLS/HTTP connections warm.
 public enum PluginHTTPClient {
     private static let logger = Logger(subsystem: "com.typewhisper.sdk", category: "HTTP")
+    private static let defaultRequestTimeout: TimeInterval = 30
+    private static let longRunningResourceTimeout: TimeInterval = 600
     private static let lock = NSLock()
     nonisolated(unsafe) private static var sharedSession: (any PluginHTTPClientSession)?
     nonisolated(unsafe) private static var sessionFactory: (URLSessionConfiguration) -> any PluginHTTPClientSession = {
@@ -140,8 +142,8 @@ public enum PluginHTTPClient {
 
     private static func makeConfiguration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 90
+        config.timeoutIntervalForRequest = defaultRequestTimeout
+        config.timeoutIntervalForResource = longRunningResourceTimeout
         return config
     }
 
@@ -257,12 +259,14 @@ public enum PluginTranscriptionError: LocalizedError, Sendable {
 public struct PluginOpenAITranscriptionHelper: Sendable {
     public let baseURL: String
     public let responseFormat: String
+    private let requestTimeout: TimeInterval
     static let minimumUploadDuration: TimeInterval = 1.0
     static let uploadSampleRate = 16000
 
-    public init(baseURL: String, responseFormat: String = "verbose_json") {
+    public init(baseURL: String, responseFormat: String = "verbose_json", requestTimeout: TimeInterval = 30) {
         self.baseURL = baseURL
         self.responseFormat = responseFormat
+        self.requestTimeout = requestTimeout
     }
 
     func normalizedAudioForUpload(_ audio: AudioData) -> AudioData {
@@ -307,7 +311,7 @@ public struct PluginOpenAITranscriptionHelper: Sendable {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
+        request.timeoutInterval = requestTimeout
 
         let uploadAudio = normalizedAudioForUpload(audio)
         var body = Data()

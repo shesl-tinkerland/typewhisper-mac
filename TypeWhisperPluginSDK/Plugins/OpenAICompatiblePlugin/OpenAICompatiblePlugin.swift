@@ -17,6 +17,7 @@ final class OpenAICompatiblePlugin: NSObject, TranscriptionEnginePlugin, Diction
     fileprivate var _llmTemperatureModeRaw: String = PluginLLMTemperatureMode.providerDefault.rawValue
     fileprivate var _llmTemperatureValue: Double = 0.3
     fileprivate var _fetchedModels: [FetchedModel] = []
+    private static let transcriptionRequestTimeout: TimeInterval = 600
 
     required override init() {
         super.init()
@@ -46,7 +47,11 @@ final class OpenAICompatiblePlugin: NSObject, TranscriptionEnginePlugin, Diction
 
     private func makeTranscriptionHelper() -> PluginOpenAITranscriptionHelper? {
         guard let baseURL = _baseURL, !baseURL.isEmpty else { return nil }
-        return PluginOpenAITranscriptionHelper(baseURL: baseURL, responseFormat: "json")
+        return PluginOpenAITranscriptionHelper(
+            baseURL: baseURL,
+            responseFormat: "json",
+            requestTimeout: Self.transcriptionRequestTimeout
+        )
     }
 
     private func makeChatHelper() -> PluginOpenAIChatHelper? {
