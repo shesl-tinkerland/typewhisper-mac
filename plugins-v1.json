@@ -1510,6 +1510,17 @@
       "hosting": "local",
       "releases": [
         {
+          "version": "1.0.1",
+          "minHostVersion": "1.4.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 8774830,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-supertonic-v1.0.1/SupertonicPlugin.zip",
+          "minOSVersion": "14.0",
+          "supportedArchitectures": [
+            "arm64"
+          ]
+        },
+        {
           "version": "1.0.0",
           "minHostVersion": "1.4.0",
           "sdkCompatibilityVersion": "v1",
