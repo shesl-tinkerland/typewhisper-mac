@@ -397,6 +397,17 @@
       "iconSystemName": "cpu",
       "releases": [
         {
+          "version": "1.1.1",
+          "minHostVersion": "1.4.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 18973969,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-qwen3-v1.1.1/Qwen3Plugin.zip",
+          "minOSVersion": "14.0",
+          "supportedArchitectures": [
+            "arm64"
+          ]
+        },
+        {
           "version": "1.1.0",
           "minHostVersion": "1.2.1",
           "sdkCompatibilityVersion": "v1",
