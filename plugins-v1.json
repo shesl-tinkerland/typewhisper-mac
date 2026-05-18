@@ -1503,6 +1503,30 @@
           "downloadCount": 14
         }
       ]
+    },
+    {
+      "id": "com.typewhisper.smallest-pulse",
+      "name": "Smallest Pulse",
+      "author": "TypeWhisper",
+      "description": "Cloud transcription via the Smallest AI Pulse STT API. Requires a Smallest API key.",
+      "descriptions": {
+        "de": "Cloud-Transkription ueber die Smallest AI Pulse STT API. Erfordert einen Smallest API-Key."
+      },
+      "category": "transcription",
+      "downloadCount": 0,
+      "iconSystemName": "waveform.badge.mic",
+      "requiresAPIKey": true,
+      "hosting": "cloud",
+      "releases": [
+        {
+          "version": "1.0.0",
+          "minHostVersion": "1.4.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 167692,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-smallest-pulse-v1.0.0/SmallestAIPlugin.zip",
+          "minOSVersion": "14.0"
+        }
+      ]
     }
   ]
 }
