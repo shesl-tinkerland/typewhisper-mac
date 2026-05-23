@@ -241,6 +241,8 @@ final class DictationViewModel: ObservableObject {
     private var firstRecordingAudioBufferSeen = false
     private var pendingRecordingStartedPayload: RecordingStartedPayload?
     private var shouldPlayRecordingStartSoundWhenReady = false
+    private var pendingRecordingAudioDuckingLevel: Float?
+    private var pendingRecordingAudioDuckingTask: Task<Void, Never>?
     private var dictationSessions: [UUID: DictationSessionSnapshot] = [:]
     private var dictationSessionOrder: [UUID] = []
     private let maxTrackedDictationSessions = 100
@@ -619,10 +621,35 @@ final class DictationViewModel: ObservableObject {
         recordingStartCuePending = false
         isRecordingInputReady = true
         if shouldPlayRecordingStartSoundWhenReady {
-            soundService.play(.recordingStarted, enabled: soundFeedbackEnabled)
+            let startSoundDuration = soundService.playbackDuration(for: .recordingStarted, enabled: soundFeedbackEnabled)
+            if !soundService.play(.recordingStarted, enabled: soundFeedbackEnabled) {
+                applyPendingRecordingAudioDuckingIfNeeded()
+            } else {
+                applyPendingRecordingAudioDuckingIfNeeded(after: startSoundDuration)
+            }
+        } else {
+            applyPendingRecordingAudioDuckingIfNeeded()
         }
         accessibilityAnnouncementService.announceRecordingStarted()
         EventBus.shared.emit(.recordingStarted(payload))
+    }
+
+    private func applyPendingRecordingAudioDuckingIfNeeded(after delay: TimeInterval? = nil) {
+        guard let level = pendingRecordingAudioDuckingLevel else { return }
+        pendingRecordingAudioDuckingLevel = nil
+        pendingRecordingAudioDuckingTask?.cancel()
+        guard let delay, delay > 0 else {
+            audioDuckingService.duckAudio(to: level)
+            return
+        }
+
+        let nanoseconds = UInt64((delay * 1_000_000_000).rounded(.up))
+        pendingRecordingAudioDuckingTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.audioDuckingService.duckAudio(to: level)
+            self?.pendingRecordingAudioDuckingTask = nil
+        }
     }
 
     private func clearRecordingStartCueState(resetReadiness: Bool = true) {
@@ -633,6 +660,9 @@ final class DictationViewModel: ObservableObject {
         firstRecordingAudioBufferSeen = false
         pendingRecordingStartedPayload = nil
         shouldPlayRecordingStartSoundWhenReady = false
+        pendingRecordingAudioDuckingLevel = nil
+        pendingRecordingAudioDuckingTask?.cancel()
+        pendingRecordingAudioDuckingTask = nil
     }
 
     private func clearDeferredRecordingContext() {
@@ -863,7 +893,9 @@ final class DictationViewModel: ObservableObject {
             }
             if mediaPauseEnabled { mediaPlaybackService.pauseIfPlaying() }
             if audioDuckingEnabled {
-                audioDuckingService.duckAudio(to: Float(audioDuckingLevel))
+                pendingRecordingAudioDuckingLevel = max(0, min(1, Float(audioDuckingLevel)))
+            } else {
+                pendingRecordingAudioDuckingLevel = nil
             }
             state = .recording
             // Reset hotkey timer so hybrid threshold counts from recording start,
