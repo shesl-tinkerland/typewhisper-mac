@@ -276,6 +276,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
         private static let promptLock = NSLock()
         nonisolated(unsafe) private static var _lastPrompt: String?
         nonisolated(unsafe) private static var _lastLanguageSelection = PluginLanguageSelection()
+        nonisolated(unsafe) private static var _responseText = "transcribed"
 
         static var lastPrompt: String? {
             promptLock.withLock { _lastPrompt }
@@ -289,6 +290,13 @@ final class APIRouterAndHandlersTests: XCTestCase {
             promptLock.withLock {
                 _lastPrompt = nil
                 _lastLanguageSelection = PluginLanguageSelection()
+                _responseText = "transcribed"
+            }
+        }
+
+        static func setResponseText(_ text: String) {
+            promptLock.withLock {
+                _responseText = text
             }
         }
 
@@ -313,7 +321,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
                 Self._lastPrompt = prompt
                 Self._lastLanguageSelection = PluginLanguageSelection(requestedLanguage: language)
             }
-            return PluginTranscriptionResult(text: "transcribed", detectedLanguage: language)
+            return PluginTranscriptionResult(text: Self.promptLock.withLock { Self._responseText }, detectedLanguage: language)
         }
 
         func transcribe(
@@ -327,7 +335,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
                 Self._lastLanguageSelection = languageSelection
             }
             return PluginTranscriptionResult(
-                text: "transcribed",
+                text: Self.promptLock.withLock { Self._responseText },
                 detectedLanguage: languageSelection.requestedLanguage ?? languageSelection.languageHints.first
             )
         }
@@ -1250,6 +1258,144 @@ final class APIRouterAndHandlersTests: XCTestCase {
 
         XCTAssertEqual(response["text"] as? String, "transcribed")
         XCTAssertEqual(MockTranscriptionPlugin.lastPrompt, "TypeWhisper, WhisperKit")
+    }
+
+    func testTranscribeEndpointNormalizesNumbersByDefault() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var context: APIContext?
+        defer {
+            context = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        MockTranscriptionPlugin.reset()
+        defer { MockTranscriptionPlugin.reset() }
+        MockTranscriptionPlugin.setResponseText("two")
+        context = await MainActor.run {
+            Self.makeAPIContext(appSupportDirectory: appSupportDirectory, withMockTranscriptionPlugin: true)
+        }
+
+        let router = try XCTUnwrap(context?.router)
+        let wavData = WavEncoder.encode(Array(repeating: Float(0), count: 1600))
+
+        let response = try Self.jsonObject(await router.route(
+            HTTPRequest(
+                method: "POST",
+                path: "/v1/transcribe",
+                queryParams: [:],
+                headers: ["content-type": "audio/wav", "x-language": "en"],
+                body: wavData
+            )
+        ))
+
+        XCTAssertEqual(response["text"] as? String, "2")
+    }
+
+    func testTranscribeEndpointNormalizeNumbersFalsePreservesRawText() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var context: APIContext?
+        defer {
+            context = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        MockTranscriptionPlugin.reset()
+        defer { MockTranscriptionPlugin.reset() }
+        MockTranscriptionPlugin.setResponseText("two")
+        context = await MainActor.run {
+            Self.makeAPIContext(appSupportDirectory: appSupportDirectory, withMockTranscriptionPlugin: true)
+        }
+
+        let router = try XCTUnwrap(context?.router)
+        let wavData = WavEncoder.encode(Array(repeating: Float(0), count: 1600))
+
+        let response = try Self.jsonObject(await router.route(
+            HTTPRequest(
+                method: "POST",
+                path: "/v1/transcribe",
+                queryParams: [:],
+                headers: [
+                    "content-type": "audio/wav",
+                    "x-language": "en",
+                    "x-normalize-numbers": "false",
+                ],
+                body: wavData
+            )
+        ))
+
+        XCTAssertEqual(response["text"] as? String, "two")
+    }
+
+    func testTranscribeEndpointRejectsInvalidNormalizeNumbersHeader() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var context: APIContext?
+        defer {
+            context = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        context = await MainActor.run {
+            Self.makeAPIContext(appSupportDirectory: appSupportDirectory, withMockTranscriptionPlugin: true)
+        }
+
+        let router = try XCTUnwrap(context?.router)
+        let response = await router.route(
+            HTTPRequest(
+                method: "POST",
+                path: "/v1/transcribe",
+                queryParams: [:],
+                headers: [
+                    "content-type": "audio/wav",
+                    "x-normalize-numbers": "maybe",
+                ],
+                body: WavEncoder.encode(Array(repeating: Float(0), count: 1600))
+            )
+        )
+        let json = try Self.jsonObject(response)
+
+        XCTAssertEqual(response.status, 400)
+        XCTAssertEqual((json["error"] as? [String: Any])?["message"] as? String, "Invalid 'x-normalize-numbers' value")
+    }
+
+    func testTranscribeEndpointRejectsInvalidMultipartNormalizeNumbers() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var context: APIContext?
+        defer {
+            context = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        context = await MainActor.run {
+            Self.makeAPIContext(appSupportDirectory: appSupportDirectory, withMockTranscriptionPlugin: true)
+        }
+
+        let router = try XCTUnwrap(context?.router)
+        let boundary = "Boundary-\(UUID().uuidString)"
+        let wavData = WavEncoder.encode(Array(repeating: Float(0), count: 1600))
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"test.wav\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        body.append(wavData)
+        body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"normalize_numbers\"\r\n\r\n".data(using: .utf8)!)
+        body.append("maybe\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+
+        let response = await router.route(
+            HTTPRequest(
+                method: "POST",
+                path: "/v1/transcribe",
+                queryParams: [:],
+                headers: ["content-type": "multipart/form-data; boundary=\(boundary)"],
+                body: body
+            )
+        )
+        let json = try Self.jsonObject(response)
+
+        XCTAssertEqual(response.status, 400)
+        XCTAssertEqual((json["error"] as? [String: Any])?["message"] as? String, "Invalid 'normalize_numbers' value")
     }
 
     func testTranscribeEndpointUsesOverrideEngineBudgetForDictionaryPrompt() async throws {
