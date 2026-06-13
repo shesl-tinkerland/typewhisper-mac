@@ -775,17 +775,25 @@
       "id": "com.typewhisper.gemini",
       "name": "Gemini",
       "author": "TypeWhisper",
-      "description": "LLM provider via Google Gemini API. Requires API key.",
+      "description": "LLM provider and cloud speech transcription via Google Gemini API. Requires API key.",
       "descriptions": {
-        "de": "LLM-Anbieter ueber die Google Gemini API. Erfordert API-Key."
+        "de": "LLM-Anbieter und Cloud-Spracherkennung \u00fcber die Google Gemini API. Erfordert API-Key."
       },
-      "category": "llm",
+      "category": "transcription",
       "downloadCount": 1268,
       "iconSystemName": "sparkles",
       "iconURL": "https://www.typewhisper.com/brand-logos/gemini/logo.svg",
       "requiresAPIKey": true,
       "detailsURL": "https://www.typewhisper.com/addons/gemini/",
       "releases": [
+        {
+          "version": "1.0.17",
+          "minHostVersion": "0.9.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 229302,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-gemini-v1.0.17/GeminiPlugin.zip",
+          "minOSVersion": "14.0"
+        },
         {
           "version": "1.0.16",
           "minHostVersion": "0.9.0",
@@ -813,6 +821,10 @@
           "minOSVersion": "14.0",
           "downloadCount": 6
         }
+      ],
+      "categories": [
+        "transcription",
+        "llm"
       ]
     },
     {
