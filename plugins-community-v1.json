@@ -795,14 +795,6 @@
           "minOSVersion": "14.0"
         },
         {
-          "version": "1.0.17",
-          "minHostVersion": "0.9.0",
-          "sdkCompatibilityVersion": "v1",
-          "size": 229302,
-          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-gemini-v1.0.17/GeminiPlugin.zip",
-          "minOSVersion": "14.0"
-        },
-        {
           "version": "1.0.16",
           "minHostVersion": "0.9.0",
           "sdkCompatibilityVersion": "v1",
