@@ -1349,7 +1349,7 @@
       "author": "TypeWhisper",
       "description": "Cloud transcription via Soniox API with real-time WebSocket streaming and translation support. Requires API key.",
       "descriptions": {
-        "de": "Cloud-Transkription ueber die Soniox-API mit Echtzeit-WebSocket-Streaming und Uebersetzungsunterstuetzung. Erfordert API-Key."
+        "de": "Cloud-Transkription \u00fcber die Soniox-API mit Echtzeit-WebSocket-Streaming und \u00dcbersetzungsunterst\u00fctzung. Erfordert API-Key."
       },
       "category": "transcription",
       "downloadCount": 106,
@@ -1357,6 +1357,14 @@
       "requiresAPIKey": true,
       "detailsURL": "https://www.typewhisper.com/addons/soniox/",
       "releases": [
+        {
+          "version": "1.1.0",
+          "minHostVersion": "1.5.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 198221,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-soniox-v1.1.0/SonioxPlugin.zip",
+          "minOSVersion": "14.0"
+        },
         {
           "version": "1.0.4",
           "minHostVersion": "0.12.0",
