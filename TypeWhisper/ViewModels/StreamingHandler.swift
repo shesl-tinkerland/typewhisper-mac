@@ -1,5 +1,6 @@
 import Foundation
 import os
+import TypeWhisperPluginSDK
 
 private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "typewhisper-mac", category: "StreamingHandler")
 
@@ -91,6 +92,7 @@ final class StreamingHandler: @unchecked Sendable {
     @MainActor
     func start(
         streamPrompt: String,
+        dictionaryTermHints: [PluginDictionaryTermHint] = [],
         engineOverrideId: String?,
         selectedProviderId: String?,
         languageSelection: LanguageSelection,
@@ -132,6 +134,7 @@ final class StreamingHandler: @unchecked Sendable {
                 engineOverrideId: engineOverrideId,
                 cloudModelOverride: cloudModelOverride,
                 prompt: streamPrompt,
+                dictionaryTermHints: dictionaryTermHints,
                 onProgress: { [weak self] text in
                     guard let self else { return false }
                     _ = self.processPreviewUpdate(
@@ -162,6 +165,7 @@ final class StreamingHandler: @unchecked Sendable {
             logger.info("Live transcript preview using fallback batch providerId=\(providerId, privacy: .public)")
             await self.runFallbackLoop(
                 streamPrompt: streamPrompt,
+                dictionaryTermHints: dictionaryTermHints,
                 engineOverrideId: engineOverrideId,
                 languageSelection: languageSelection,
                 task: task,
@@ -252,6 +256,7 @@ final class StreamingHandler: @unchecked Sendable {
 
     private func runFallbackLoop(
         streamPrompt: String,
+        dictionaryTermHints: [PluginDictionaryTermHint],
         engineOverrideId: String?,
         languageSelection: LanguageSelection,
         task: TranscriptionTask,
@@ -276,6 +281,7 @@ final class StreamingHandler: @unchecked Sendable {
                         engineOverrideId: engineOverrideId,
                         cloudModelOverride: cloudModelOverride,
                         prompt: streamPrompt,
+                        dictionaryTermHints: dictionaryTermHints,
                         normalizeNumbers: normalizeNumbers,
                         onProgress: { [weak self] text in
                             guard let self, !Task.isCancelled else { return false }

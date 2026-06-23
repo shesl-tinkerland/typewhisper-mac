@@ -1045,6 +1045,10 @@ final class APIRouterAndHandlersTests: XCTestCase {
         let expectedTerms = ["Qwen3", "TypeWhisper", "WhisperKit"]
         XCTAssertEqual(putResponse["count"] as? Int, 3)
         XCTAssertEqual(putResponse["terms"] as? [String], expectedTerms)
+        XCTAssertEqual(
+            (putResponse["term_entries"] as? [[String: Any]])?.compactMap { $0["term"] as? String },
+            expectedTerms
+        )
 
         let mergeBody = try JSONSerialization.data(withJSONObject: [
             "terms": ["Raycast", "qwen3"],
@@ -1114,6 +1118,90 @@ final class APIRouterAndHandlersTests: XCTestCase {
             HTTPRequest(method: "DELETE", path: "/v1/dictionary/terms", queryParams: [:], headers: [:], body: Data())
         )
         XCTAssertEqual(emptyDelete.status, 400)
+    }
+
+    func testDictionaryTermsEndpointAcceptsStructuredTermEntries() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var context: APIContext?
+        defer {
+            context = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        context = await MainActor.run { Self.makeAPIContext(appSupportDirectory: appSupportDirectory) }
+        let apiContext = try XCTUnwrap(context)
+        let router = apiContext.router
+
+        let putBody = try JSONSerialization.data(withJSONObject: [
+            "term_entries": [
+                ["term": " Caivex ", "ctc_min_similarity": 0.65],
+                ["term": "Reson8"],
+            ],
+            "replace": true,
+        ])
+        let putResponse = try Self.jsonObject(await router.route(
+            HTTPRequest(
+                method: "PUT",
+                path: "/v1/dictionary/terms",
+                queryParams: [:],
+                headers: ["content-type": "application/json"],
+                body: putBody
+            )
+        ))
+
+        XCTAssertEqual(putResponse["terms"] as? [String], ["Caivex", "Reson8"])
+        let structuredEntries = try XCTUnwrap(putResponse["term_entries"] as? [[String: Any]])
+        XCTAssertEqual(structuredEntries[0]["term"] as? String, "Caivex")
+        XCTAssertEqual(try XCTUnwrap(structuredEntries[0]["ctc_min_similarity"] as? Double), 0.65, accuracy: 0.0001)
+        XCTAssertEqual(structuredEntries[1]["term"] as? String, "Reson8")
+        XCTAssertNil(structuredEntries[1]["ctc_min_similarity"])
+
+        let mergeBody = try JSONSerialization.data(withJSONObject: [
+            "terms": ["caivex"],
+        ])
+        _ = await router.route(HTTPRequest(
+            method: "PUT",
+            path: "/v1/dictionary/terms",
+            queryParams: [:],
+            headers: ["content-type": "application/json"],
+            body: mergeBody
+        ))
+
+        let hints = await MainActor.run { apiContext.dictionaryService.enabledTermHints() }
+        XCTAssertEqual(hints, [
+            PluginDictionaryTermHint(text: "caivex", ctcMinSimilarity: 0.65),
+            PluginDictionaryTermHint(text: "Reson8", ctcMinSimilarity: nil),
+        ])
+    }
+
+    func testDictionaryTermsEndpointRejectsAmbiguousPayloadFormats() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var context: APIContext?
+        defer {
+            context = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        context = await MainActor.run { Self.makeAPIContext(appSupportDirectory: appSupportDirectory) }
+        let router = try XCTUnwrap(context?.router)
+        let body = try JSONSerialization.data(withJSONObject: [
+            "terms": ["Caivex"],
+            "term_entries": [
+                ["term": "Reson8", "ctc_min_similarity": 0.65],
+            ],
+        ])
+
+        let response = await router.route(HTTPRequest(
+            method: "PUT",
+            path: "/v1/dictionary/terms",
+            queryParams: [:],
+            headers: ["content-type": "application/json"],
+            body: body
+        ))
+
+        XCTAssertEqual(response.status, 400)
+        let error = try Self.jsonObject(response)
+        XCTAssertEqual((error["error"] as? [String: Any])?["message"] as? String, "Use either 'terms' or 'term_entries', not both")
     }
 
     func testDictionaryCorrectionsEndpointsListUpsertDeleteAndValidateInput() async throws {

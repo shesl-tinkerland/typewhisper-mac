@@ -112,7 +112,8 @@ final class DictionaryService: ObservableObject {
         type: DictionaryEntryType,
         original: String,
         replacement: String? = nil,
-        caseSensitive: Bool = false
+        caseSensitive: Bool = false,
+        ctcMinSimilarity: Float? = nil
     ) {
         guard let context = modelContext else { return }
 
@@ -127,6 +128,7 @@ final class DictionaryService: ObservableObject {
             original: original,
             replacement: replacement,
             caseSensitive: caseSensitive,
+            ctcMinSimilarity: Self.normalizedCtcMinSimilarity(type == .term ? ctcMinSimilarity : nil),
             createdAt: now,
             updatedAt: now
         )
@@ -145,13 +147,15 @@ final class DictionaryService: ObservableObject {
         _ entry: DictionaryEntry,
         original: String,
         replacement: String?,
-        caseSensitive: Bool
+        caseSensitive: Bool,
+        ctcMinSimilarity: Float? = nil
     ) {
         guard let context = modelContext else { return }
 
         entry.original = original
         entry.replacement = replacement
         entry.caseSensitive = caseSensitive
+        entry.ctcMinSimilarity = Self.normalizedCtcMinSimilarity(entry.type == .term ? ctcMinSimilarity : nil)
         entry.updatedAt = Date()
 
         do {
@@ -191,22 +195,34 @@ final class DictionaryService: ObservableObject {
 
     /// Batch add multiple entries with a single save+reload
     func addEntries(_ items: [(type: DictionaryEntryType, original: String, replacement: String?, caseSensitive: Bool)]) {
+        addEntries(items.map {
+            (type: $0.type, original: $0.original, replacement: $0.replacement,
+             caseSensitive: $0.caseSensitive, ctcMinSimilarity: nil as Float?)
+        })
+    }
+
+    /// Batch add multiple entries with a single save+reload
+    func addEntries(_ items: [(type: DictionaryEntryType, original: String, replacement: String?, caseSensitive: Bool, ctcMinSimilarity: Float?)]) {
         guard let context = modelContext, !items.isEmpty else { return }
 
-        let existingOriginals = Set(entries.map { "\($0.type.rawValue):\($0.original.lowercased())" })
+        var existingOriginals = Set(entries.map { "\($0.type.rawValue):\($0.original.lowercased())" })
 
         for item in items {
             let key = "\(item.type.rawValue):\(item.original.lowercased())"
             guard !existingOriginals.contains(key) else { continue }
+            let now = Date()
 
             let entry = DictionaryEntry(
                 type: item.type,
                 original: item.original,
                 replacement: item.replacement,
                 caseSensitive: item.caseSensitive,
-                updatedAt: Date()
+                ctcMinSimilarity: Self.normalizedCtcMinSimilarity(item.type == .term ? item.ctcMinSimilarity : nil),
+                createdAt: now,
+                updatedAt: now
             )
             context.insert(entry)
+            existingOriginals.insert(key)
         }
 
         do {
@@ -219,6 +235,14 @@ final class DictionaryService: ObservableObject {
 
     /// Import entries preserving all fields including isEnabled state
     func importEntries(_ items: [(type: DictionaryEntryType, original: String, replacement: String?, caseSensitive: Bool, isEnabled: Bool)]) {
+        importEntries(items.map {
+            (type: $0.type, original: $0.original, replacement: $0.replacement,
+             caseSensitive: $0.caseSensitive, isEnabled: $0.isEnabled, ctcMinSimilarity: nil as Float?)
+        })
+    }
+
+    /// Import entries preserving all fields including isEnabled state
+    func importEntries(_ items: [(type: DictionaryEntryType, original: String, replacement: String?, caseSensitive: Bool, isEnabled: Bool, ctcMinSimilarity: Float?)]) {
         guard let context = modelContext, !items.isEmpty else { return }
 
         var existingOriginals = Set(entries.map { "\($0.type.rawValue):\($0.original.lowercased())" })
@@ -226,6 +250,7 @@ final class DictionaryService: ObservableObject {
         for item in items {
             let key = "\(item.type.rawValue):\(item.original.lowercased())"
             guard !existingOriginals.contains(key) else { continue }
+            let now = Date()
 
             let entry = DictionaryEntry(
                 type: item.type,
@@ -233,7 +258,9 @@ final class DictionaryService: ObservableObject {
                 replacement: item.replacement,
                 caseSensitive: item.caseSensitive,
                 isEnabled: item.isEnabled,
-                updatedAt: Date()
+                ctcMinSimilarity: Self.normalizedCtcMinSimilarity(item.type == .term ? item.ctcMinSimilarity : nil),
+                createdAt: now,
+                updatedAt: now
             )
             context.insert(entry)
             existingOriginals.insert(key)
@@ -267,6 +294,12 @@ final class DictionaryService: ObservableObject {
     /// Truncates at 600 characters to stay within the API's 224-token limit.
     func enabledTerms() -> [String] {
         PluginDictionaryTerms.normalizedTerms(from: terms.map(\.original))
+    }
+
+    func enabledTermHints() -> [PluginDictionaryTermHint] {
+        PluginDictionaryTerms.normalizedTermHints(from: terms.map {
+            PluginDictionaryTermHint(text: $0.original, ctcMinSimilarity: $0.ctcMinSimilarity)
+        })
     }
 
     func setTerms(_ rawTerms: [String], replaceExisting: Bool) {
@@ -315,6 +348,64 @@ final class DictionaryService: ObservableObject {
                 loadEntries()
             } catch {
                 logger.error("Failed to set terms: \(error.localizedDescription)")
+                throw DictionaryServiceMutationError.saveFailed(error)
+            }
+        }
+    }
+
+    func setAPITermEntries(_ rawTerms: [(term: String, ctcMinSimilarity: Float?)], replaceExisting: Bool) throws {
+        guard let context = modelContext else {
+            throw DictionaryServiceMutationError.unavailable
+        }
+
+        let normalized = PluginDictionaryTerms.normalizedTermHints(from: rawTerms.map {
+            PluginDictionaryTermHint(
+                text: $0.term,
+                ctcMinSimilarity: Self.normalizedCtcMinSimilarity($0.ctcMinSimilarity)
+            )
+        })
+        let normalizedByKey = Dictionary(uniqueKeysWithValues: normalized.map {
+            ($0.text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current), $0)
+        })
+        let desiredKeys = Set(normalizedByKey.keys)
+        let existingTerms = entries.filter { $0.type == .term }
+
+        for entry in existingTerms {
+            let key = entry.original.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            if let desiredTerm = normalizedByKey[key] {
+                entry.original = desiredTerm.text
+                entry.isEnabled = true
+                entry.ctcMinSimilarity = desiredTerm.ctcMinSimilarity
+                entry.updatedAt = Date()
+            } else if replaceExisting {
+                context.delete(entry)
+            }
+        }
+
+        let existingKeys = Set(existingTerms.map {
+            $0.original.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        })
+
+        for term in normalized where !existingKeys.contains(term.text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)) {
+            let now = Date()
+            context.insert(DictionaryEntry(
+                type: .term,
+                original: term.text,
+                replacement: nil,
+                caseSensitive: false,
+                isEnabled: true,
+                ctcMinSimilarity: term.ctcMinSimilarity,
+                createdAt: now,
+                updatedAt: now
+            ))
+        }
+
+        if replaceExisting || !desiredKeys.isEmpty {
+            do {
+                try context.save()
+                loadEntries()
+            } catch {
+                logger.error("Failed to set term entries: \(error.localizedDescription)")
                 throw DictionaryServiceMutationError.saveFailed(error)
             }
         }
@@ -382,6 +473,22 @@ final class DictionaryService: ObservableObject {
         }
 
         return PluginDictionaryTerms.prompt(from: terms, budget: budget)
+    }
+
+    func getTermHints(providerId: String?) -> [PluginDictionaryTermHint] {
+        let hints = enabledTermHints()
+        guard !hints.isEmpty else { return [] }
+
+        guard let providerId,
+              let plugin = PluginManager.shared?.transcriptionEngine(for: providerId),
+              let budget = (plugin as? any DictionaryTermsBudgetProviding)?.dictionaryTermsBudget else {
+            return PluginDictionaryTerms.clippedTermHints(
+                from: hints,
+                budget: DictionaryTermsBudget(maxTotalChars: 600)
+            )
+        }
+
+        return PluginDictionaryTerms.clippedTermHints(from: hints, budget: budget)
     }
 
     /// Apply all enabled corrections to the given text
@@ -728,6 +835,11 @@ final class DictionaryService: ObservableObject {
             return
         }
         context.delete(entry)
+    }
+
+    private static func normalizedCtcMinSimilarity(_ value: Float?) -> Float? {
+        guard let value, value.isFinite else { return nil }
+        return Swift.min(Swift.max(value, 0), 1)
     }
 
 }
