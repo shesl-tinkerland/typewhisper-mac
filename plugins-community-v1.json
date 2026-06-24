@@ -358,8 +358,8 @@
       "author": "TypeWhisper",
       "description": "Connect to any OpenAI-compatible API server for transcription and LLM. Works with Ollama, LM Studio, vLLM, and more.",
       "descriptions": {
-        "de": "Verbindung zu jedem OpenAI-kompatiblen API-Server f\u00fcr Transkription und LLM. Funktioniert mit Ollama, LM Studio, vLLM und mehr.",
-        "ja": "\u6587\u5b57\u8d77\u3053\u3057\u3068LLM\u7528\u306b\u4efb\u610f\u306eOpenAI\u4e92\u63dbAPI\u30b5\u30fc\u30d0\u30fc\u3078\u63a5\u7d9a\u3057\u307e\u3059\u3002Ollama\u3001LM Studio\u3001vLLM\u306a\u3069\u3067\u52d5\u4f5c\u3057\u307e\u3059\u3002"
+        "de": "Verbindung zu jedem OpenAI-kompatiblen API-Server für Transkription und LLM. Funktioniert mit Ollama, LM Studio, vLLM und mehr.",
+        "ja": "文字起こしとLLM用に任意のOpenAI互換APIサーバーへ接続します。Ollama、LM Studio、vLLMなどで動作します。"
       },
       "category": "transcription",
       "downloadCount": 2298,
@@ -457,8 +457,8 @@
       "author": "TypeWhisper",
       "description": "Local Qwen3-ASR speech-to-text powered by MLX on Apple Silicon. 30 languages plus Chinese dialect coverage, no API key required.",
       "descriptions": {
-        "de": "Lokale Qwen3-ASR-Spracherkennung mit MLX auf Apple Silicon. 30 Sprachen plus chinesische Dialektabdeckung, kein API-Key n\u00f6tig.",
-        "ja": "Apple Silicon\u4e0a\u306eMLX\u3067\u52d5\u4f5c\u3059\u308b\u30ed\u30fc\u30ab\u30ebQwen3-ASR\u97f3\u58f0\u8a8d\u8b58\u3067\u3059\u300230\u8a00\u8a9e\u3068\u4e2d\u56fd\u8a9e\u65b9\u8a00\u306b\u5bfe\u5fdc\u3057\u3001API\u30ad\u30fc\u306f\u4e0d\u8981\u3067\u3059\u3002"
+        "de": "Lokale Qwen3-ASR-Spracherkennung mit MLX auf Apple Silicon. 30 Sprachen plus chinesische Dialektabdeckung, kein API-Key nötig.",
+        "ja": "Apple Silicon上のMLXで動作するローカルQwen3-ASR音声認識です。30言語と中国語方言に対応し、APIキーは不要です。"
       },
       "category": "transcription",
       "downloadCount": 3201,
@@ -825,7 +825,7 @@
       "author": "TypeWhisper",
       "description": "LLM provider and cloud speech transcription via Google Gemini API. Requires API key.",
       "descriptions": {
-        "de": "LLM-Anbieter und Cloud-Spracherkennung \u00fcber die Google Gemini API. Erfordert API-Key."
+        "de": "LLM-Anbieter und Cloud-Spracherkennung über die Google Gemini API. Erfordert API-Key."
       },
       "category": "transcription",
       "downloadCount": 1343,
@@ -1190,8 +1190,8 @@
       "author": "TypeWhisper",
       "description": "Access OpenRouter speech-to-text models and 300+ LLMs from OpenAI, Anthropic, Meta, Google and more. Shows model pricing and account balance. Requires API key.",
       "descriptions": {
-        "de": "Zugriff auf OpenRouter-Spracherkennungsmodelle und \u00fcber 300 LLMs von OpenAI, Anthropic, Meta, Google und mehr. Zeigt Modellpreise und Kontoguthaben. Erfordert API-Key.",
-        "ja": "OpenAI\u3001Anthropic\u3001Meta\u3001Google\u306a\u3069\u306eOpenRouter\u97f3\u58f0\u8a8d\u8b58\u30e2\u30c7\u30eb\u3068300\u4ee5\u4e0a\u306eLLM\u306b\u30a2\u30af\u30bb\u30b9\u3067\u304d\u307e\u3059\u3002\u30e2\u30c7\u30eb\u6599\u91d1\u3068\u30a2\u30ab\u30a6\u30f3\u30c8\u6b8b\u9ad8\u3092\u8868\u793a\u3057\u3001API\u30ad\u30fc\u304c\u5fc5\u8981\u3067\u3059\u3002"
+        "de": "Zugriff auf OpenRouter-Spracherkennungsmodelle und über 300 LLMs von OpenAI, Anthropic, Meta, Google und mehr. Zeigt Modellpreise und Kontoguthaben. Erfordert API-Key.",
+        "ja": "OpenAI、Anthropic、Meta、GoogleなどのOpenRouter音声認識モデルと300以上のLLMにアクセスできます。モデル料金とアカウント残高を表示し、APIキーが必要です。"
       },
       "category": "transcription",
       "downloadCount": 678,
@@ -1365,7 +1365,7 @@
       "author": "TypeWhisper",
       "description": "Post-process transcribed text through custom shell scripts. Pass text via stdin, get results via stdout.",
       "descriptions": {
-        "de": "Transkribierten Text durch eigene Shell-Skripte nachbearbeiten. Text wird per stdin \u00fcbergeben, Ergebnis per stdout zur\u00fcckgegeben."
+        "de": "Transkribierten Text durch eigene Shell-Skripte nachbearbeiten. Text wird per stdin übergeben, Ergebnis per stdout zurückgegeben."
       },
       "category": "post-processor",
       "downloadCount": 692,
@@ -1407,7 +1407,7 @@
       "author": "TypeWhisper",
       "description": "Cloud speech-to-text and text-to-speech via Soniox APIs with regional endpoint support. Requires API key.",
       "descriptions": {
-        "de": "Cloud Speech-to-Text und Text-to-Speech \u00fcber Soniox APIs mit regionaler Endpunkt-Auswahl. Erfordert API-Key."
+        "de": "Cloud Speech-to-Text und Text-to-Speech über Soniox APIs mit regionaler Endpunkt-Auswahl. Erfordert API-Key."
       },
       "category": "transcription",
       "downloadCount": 128,
@@ -1817,7 +1817,7 @@
       "category": "transcription",
       "downloadCount": 39,
       "descriptions": {
-        "de": "Cloud-Transkription \u00fcber die Reson8-Speech-to-Text-API mit Echtzeit-WebSocket-Streaming. Erfordert API-Key."
+        "de": "Cloud-Transkription über die Reson8-Speech-to-Text-API mit Echtzeit-WebSocket-Streaming. Erfordert API-Key."
       },
       "iconSystemName": "waveform.badge.mic",
       "requiresAPIKey": true,
@@ -1866,8 +1866,8 @@
         }
       ],
       "descriptions": {
-        "de": "Cloud-Transkription \u00fcber die Sber SaluteSpeech REST API. Erfordert einen SaluteSpeech Authorization Key.",
-        "ja": "Sber SaluteSpeech REST API\u306b\u3088\u308b\u30af\u30e9\u30a6\u30c9\u6587\u5b57\u8d77\u3053\u3057\u3067\u3059\u3002SaluteSpeech Authorization Key\u304c\u5fc5\u8981\u3067\u3059\u3002"
+        "de": "Cloud-Transkription über die Sber SaluteSpeech REST API. Erfordert einen SaluteSpeech Authorization Key.",
+        "ja": "Sber SaluteSpeech REST APIによるクラウド文字起こしです。SaluteSpeech Authorization Keyが必要です。"
       }
     },
     {
@@ -1878,7 +1878,7 @@
       "category": "transcription",
       "downloadCount": 11,
       "descriptions": {
-        "de": "Cloud Speech-to-Text und Text-to-Speech \u00fcber Cartesia APIs. Erfordert einen Cartesia API-Key."
+        "de": "Cloud Speech-to-Text und Text-to-Speech über Cartesia APIs. Erfordert einen Cartesia API-Key."
       },
       "categories": [
         "transcription",
@@ -1918,7 +1918,7 @@
       "category": "transcription",
       "downloadCount": 7,
       "descriptions": {
-        "de": "LLM-Anbieter und Cloud-Spracherkennung \u00fcber die Mistral AI API. Erfordert API-Key."
+        "de": "LLM-Anbieter und Cloud-Spracherkennung über die Mistral AI API. Erfordert API-Key."
       },
       "categories": [
         "transcription",
@@ -1954,15 +1954,14 @@
       "name": "MemPalace",
       "author": "MemPalace",
       "description": "Store and search memories in MemPalace Cloud or a self-hosted MemPalace instance. Memories are filed into a user-chosen wing and room, with shared knowledge-graph tunneling on the server.",
-      "category": "memory",
-      "downloadCount": 14,
-      "source": "community",
       "descriptions": {
         "de": "Speichert und durchsucht Erinnerungen in MemPalace Cloud oder einer selbstgehosteten MemPalace-Instanz. Memories werden in einen ausgewaehlten Wing und Room einsortiert, mit Knowledge-Graph-Tunneling auf dem Server."
       },
-      "iconSystemName": "building.columns",
-      "requiresAPIKey": true,
+      "source": "community",
+      "category": "memory",
       "hosting": "cloud",
+      "requiresAPIKey": true,
+      "iconSystemName": "building.columns",
       "releases": [
         {
           "version": "0.3.5",
