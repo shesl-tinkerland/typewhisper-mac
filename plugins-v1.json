@@ -1874,7 +1874,8 @@
       "author": "TypeWhisper",
       "description": "Cloud LLM, speech-to-text, and text-to-speech via xAI Grok APIs. Requires an xAI API key.",
       "descriptions": {
-        "de": "Cloud-LLM, Speech-to-Text und Text-to-Speech ueber xAI-Grok-APIs. Erfordert einen xAI API-Key."
+        "de": "Cloud-LLM, Speech-to-Text und Text-to-Speech \u00fcber xAI-Grok-APIs. Erfordert einen xAI API-Key.",
+        "ja": "xAI Grok API\u306b\u3088\u308b\u30af\u30e9\u30a6\u30c9LLM\u3001\u97f3\u58f0\u8a8d\u8b58\u3001\u97f3\u58f0\u5408\u6210\u3067\u3059\u3002xAI API\u30ad\u30fc\u304c\u5fc5\u8981\u3067\u3059\u3002"
       },
       "category": "transcription",
       "downloadCount": 35,
@@ -1886,6 +1887,14 @@
       "detailsURL": "https://www.typewhisper.com/addons/xai-grok/",
       "releases": [
         {
+          "version": "1.0.1",
+          "minHostVersion": "1.5.0",
+          "sdkCompatibilityVersion": "v1",
+          "size": 306830,
+          "downloadURL": "https://github.com/TypeWhisper/typewhisper-mac/releases/download/plugin-xai-v1.0.1/XAIPlugin.zip",
+          "minOSVersion": "14.0"
+        },
+        {
           "version": "1.0.0",
           "minHostVersion": "1.4.0",
           "sdkCompatibilityVersion": "v1",
@@ -1894,6 +1903,11 @@
           "minOSVersion": "14.0",
           "downloadCount": 35
         }
+      ],
+      "categories": [
+        "transcription",
+        "llm",
+        "tts"
       ]
     },
     {
